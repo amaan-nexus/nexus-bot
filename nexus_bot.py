@@ -63,11 +63,11 @@ CONFIG = {
     "MACD_SIGNAL": 9,
 
     # ── Capital ──
-    "STARTING_CAPITAL": 30000,        # Your capital in base currency (₹ equivalent)
+    "STARTING_CAPITAL": float(os.getenv("STARTING_CAPITAL", "30000")),        # Your capital in base currency (₹ equivalent)
 
     # ── Telegram Alerts (optional) ──
-    "TELEGRAM_TOKEN": "",             # Your bot token from @BotFather
-    "TELEGRAM_CHAT_ID": "",           # Your chat ID
+    "TELEGRAM_TOKEN": os.getenv("TELEGRAM_TOKEN", ""),             # Your bot token from @BotFather
+    "TELEGRAM_CHAT_ID": os.getenv("TELEGRAM_CHAT_ID", ""),           # Your chat ID
 
     # ── Logging ──
     "LOG_FILE": "nexus_bot.log",
