@@ -115,7 +115,7 @@ if res["signal"] in ["BUY", "SELL"] and symbol not in self.trades:
                     "dir": res["signal"],
                     "time": datetime.now()
                 }
-        self.last_trade_time[symbol] = now
+        self.last_trade_time[symbol] = datetime.now()
 
                 msg = f"🚀 ENTER {symbol}\nPrice: {res['entry']}\nSL: {res['sl']}"
                 log.info(msg)
