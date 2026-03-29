@@ -44,10 +44,10 @@ class StrategyEngine:
         low = df["low"].rolling(10).min().iloc[-2]
 
         # 🔥 EARLIER BREAKOUT (more trades)
-        if price > high * 0.999:
+        if price > high * 0.999 and last["ema_fast"] > last["ema_slow"]:
             return {"signal": "BUY", "entry": price, "sl": price - atr}
 
-        if price < low * 1.001:
+        if price < low * 1.001 and last["ema_fast"] < last["ema_slow"]:
             return {"signal": "SELL", "entry": price, "sl": price + atr}
 
         # 🔥 TREND FOLLOW (backup)
@@ -106,12 +106,12 @@ if res["signal"] in ["BUY", "SELL"] and symbol not in self.trades:
 
     last_time = self.last_trade_time.get(symbol)
 
-    if last_time and (now - last_time).seconds < 120:
+    if last_time and (now - last_time).seconds < 300:
         continue
                 self.trades[symbol] = {
                     "entry": res["entry"],
                     "sl": res["sl"],
-                    "tp": res["entry"] * 1.01,
+                    "tp": res["entry"] * 1.02,
                     "dir": res["signal"],
                     "time": datetime.now()
                 }
