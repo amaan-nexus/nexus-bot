@@ -131,18 +131,21 @@ if res["signal"] in ["BUY", "SELL"] and symbol not in self.trades:
                 if (t["dir"] == "BUY" and price >= t["tp"]) or \
                    (t["dir"] == "SELL" and price <= t["tp"]):
                     send_telegram(f"✅ TP HIT {symbol}")
-                    del self.trades[symbol]
+self.last_trade_time[symbol] = datetime.now()
+del self.trades[symbol]
 
                 # SL
                 elif (t["dir"] == "BUY" and price <= t["sl"]) or \
                      (t["dir"] == "SELL" and price >= t["sl"]):
                     send_telegram(f"❌ SL HIT {symbol}")
-                    del self.trades[symbol]
+self.last_trade_time[symbol] = datetime.now()
+del self.trades[symbol]
 
                 # TIME EXIT
                 elif (datetime.now() - t["time"]).seconds > 900:
                     send_telegram(f"⏱ TIME EXIT {symbol}")
-                    del self.trades[symbol]
+self.last_trade_time[symbol] = datetime.now()
+del self.trades[symbol]
 
 
 # ================= RUN =================
