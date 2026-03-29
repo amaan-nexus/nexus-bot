@@ -101,12 +101,12 @@ class Bot:
             now = datetime.now()
 
             # ================= ENTRY =================
-            last_price = self.trades.get(symbol, {}).get("entry")
+            last_price = getattr(self, "last_entry_price", {}).get(symbol)
 
 if res["signal"] in ["BUY", "SELL"] \
 and symbol not in self.trades \
-and (symbol not in self.last_trade_time or (now - self.last_trade_time[symbol]).seconds > 300) \
-and (last_price is None or abs(res["entry"] - last_price) > 0.002 * res["entry"]):
+and (symbol not in self.last_trade_time or (now - self.last_trade_time[symbol]).seconds > 900) \
+and (last_price is None or abs(res["entry"] - last_price) > 0.0025 * res["entry"]):
     
                 self.trades[symbol] = {
                     "entry": res["entry"],
@@ -115,8 +115,12 @@ and (last_price is None or abs(res["entry"] - last_price) > 0.002 * res["entry"]
                     "dir": res["signal"],
                     "time": now
                 }
+    if not hasattr(self, "last_entry_price"):
+       self.last_entry_price = {}
 
-                self.last_trade_time[symbol] = now
+    self.last_entry_price[symbol] = res["entry"]
+
+    self.last_trade_time[symbol] = now
 
                 msg = f"🚀 ENTER {symbol}\nPrice: {res['entry']}\nSL: {res['sl']}"
                 log.info(msg)
