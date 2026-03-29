@@ -85,6 +85,7 @@ class Bot:
         self.trader = BinanceTrader()
         self.strategy = StrategyEngine()
         self.trades = {}
+        self.last_trade_time = {}
 
         send_telegram("✅ CONNECTED: Bot is live")
 
@@ -98,8 +99,15 @@ class Bot:
             log.info(f"{symbol} → {res['signal']}")
 
             # ENTRY
-            if res["signal"] in ["BUY", "SELL"] and symbol not in self.trades:
+            
+now = datetime.now()
 
+if res["signal"] in ["BUY", "SELL"] and symbol not in self.trades:
+
+    last_time = self.last_trade_time.get(symbol)
+
+    if last_time and (now - last_time).seconds < 120:
+        continue
                 self.trades[symbol] = {
                     "entry": res["entry"],
                     "sl": res["sl"],
@@ -107,6 +115,7 @@ class Bot:
                     "dir": res["signal"],
                     "time": datetime.now()
                 }
+        self.last_trade_time[symbol] = now
 
                 msg = f"🚀 ENTER {symbol}\nPrice: {res['entry']}\nSL: {res['sl']}"
                 log.info(msg)
