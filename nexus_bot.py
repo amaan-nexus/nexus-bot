@@ -6,18 +6,20 @@ import ta
 # ================= CONFIG =================
 CONFIG = {
     "TRADE_MODE": "DEMO",
-
-    # ✅ FIXED MULTI SYMBOLS
     "MULTI_SYMBOLS": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
-
     "BINANCE_INTERVAL": "1m",
-
-    "RISK_PERCENT": 0.5,
-    "RR_RATIO": 2.0,
-    "MAX_OPEN_TRADES": 3,
-
-    "STARTING_CAPITAL": 30000,
 }
+
+# ================= TELEGRAM =================
+TELEGRAM_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
+TELEGRAM_CHAT_ID = "2046394042"
+
+def send_telegram(msg):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+    except:
+        pass
 
 # ================= LOG =================
 logging.basicConfig(level=logging.INFO)
@@ -38,16 +40,21 @@ class StrategyEngine:
         price = last["close"]
         atr = last["atr"]
 
-        # 🔥 BREAKOUT LOGIC
         high = df["high"].rolling(10).max().iloc[-2]
         low = df["low"].rolling(10).min().iloc[-2]
 
-        vol_avg = df["volume"].rolling(10).mean().iloc[-2]
-
-        if price > high and last["volume"] > vol_avg * 1.5:
+        # Breakout
+        if price > high:
             return {"signal": "BUY", "entry": price, "sl": price - atr}
 
-        if price < low and last["volume"] > vol_avg * 1.5:
+        if price < low:
+            return {"signal": "SELL", "entry": price, "sl": price + atr}
+
+        # Trend
+        if last["ema_fast"] > last["ema_slow"]:
+            return {"signal": "BUY", "entry": price, "sl": price - atr}
+
+        elif last["ema_fast"] < last["ema_slow"]:
             return {"signal": "SELL", "entry": price, "sl": price + atr}
 
         return {"signal": "WAIT", "entry": price}
@@ -78,6 +85,7 @@ class Bot:
         self.trader = BinanceTrader()
         self.strategy = StrategyEngine()
         self.trades = {}
+        send_telegram("🤖 BOT STARTED SUCCESSFULLY")
 
     def run(self):
 
@@ -99,7 +107,9 @@ class Bot:
                     "time": datetime.now()
                 }
 
-                log.info(f"🚀 ENTER {symbol}")
+                msg = f"🚀 ENTER {symbol}\nPrice: {res['entry']}\nSL: {res['sl']}"
+                log.info(msg)
+                send_telegram(msg)
 
             # EXIT
             elif symbol in self.trades:
@@ -107,21 +117,18 @@ class Bot:
                 t = self.trades[symbol]
                 price = self.trader.get_price(symbol)
 
-                # TP
                 if (t["dir"] == "BUY" and price >= t["tp"]) or \
                    (t["dir"] == "SELL" and price <= t["tp"]):
-                    log.info(f"✅ TP {symbol}")
+                    send_telegram(f"✅ TP HIT {symbol}")
                     del self.trades[symbol]
 
-                # SL
                 elif (t["dir"] == "BUY" and price <= t["sl"]) or \
                      (t["dir"] == "SELL" and price >= t["sl"]):
-                    log.info(f"❌ SL {symbol}")
+                    send_telegram(f"❌ SL HIT {symbol}")
                     del self.trades[symbol]
 
-                # TIME EXIT
                 elif (datetime.now() - t["time"]).seconds > 900:
-                    log.info(f"⏱ TIME EXIT {symbol}")
+                    send_telegram(f"⏱ TIME EXIT {symbol}")
                     del self.trades[symbol]
 
 
