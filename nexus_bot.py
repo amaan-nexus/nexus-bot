@@ -11,8 +11,8 @@ CONFIG = {
 }
 
 # ================= TELEGRAM =================
-TELEGRAM_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
-TELEGRAM_CHAT_ID = "2046394042"
+TELEGRAM_TOKEN = "YOUR_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
 
 def send_telegram(msg):
     try:
@@ -43,14 +43,14 @@ class StrategyEngine:
         high = df["high"].rolling(10).max().iloc[-2]
         low = df["low"].rolling(10).min().iloc[-2]
 
-        # 🔥 EARLIER BREAKOUT (more trades)
+        # Breakout
         if price > high * 0.999 and last["ema_fast"] > last["ema_slow"]:
             return {"signal": "BUY", "entry": price, "sl": price - atr}
 
         if price < low * 1.001 and last["ema_fast"] < last["ema_slow"]:
             return {"signal": "SELL", "entry": price, "sl": price + atr}
 
-        # 🔥 TREND FOLLOW (backup)
+        # Trend fallback
         if last["ema_fast"] > last["ema_slow"]:
             return {"signal": "BUY", "entry": price, "sl": price - atr}
 
@@ -98,34 +98,28 @@ class Bot:
 
             log.info(f"{symbol} → {res['signal']}")
 
-            # ENTRY
-            
-now = datetime.now()
+            now = datetime.now()
 
-now = datetime.now()
+            # ================= ENTRY =================
+            if res["signal"] in ["BUY", "SELL"] \
+            and symbol not in self.trades \
+            and (symbol not in self.last_trade_time or (now - self.last_trade_time[symbol]).seconds > 300):
 
-if res["signal"] in ["BUY", "SELL"] \
-and symbol not in self.trades \
-and (symbol not in self.last_trade_time or (now - self.last_trade_time[symbol]).seconds > 300):
-
-    last_time = self.last_trade_time.get(symbol)
-
-    if last_time and (now - last_time).seconds < 300:
-        continue
                 self.trades[symbol] = {
                     "entry": res["entry"],
                     "sl": res["sl"],
                     "tp": res["entry"] * 1.02,
                     "dir": res["signal"],
-                    "time": datetime.now()
+                    "time": now
                 }
-        self.last_trade_time[symbol] = datetime.now()
+
+                self.last_trade_time[symbol] = now
 
                 msg = f"🚀 ENTER {symbol}\nPrice: {res['entry']}\nSL: {res['sl']}"
                 log.info(msg)
                 send_telegram(msg)
 
-            # EXIT
+            # ================= EXIT =================
             elif symbol in self.trades:
 
                 t = self.trades[symbol]
@@ -134,22 +128,25 @@ and (symbol not in self.last_trade_time or (now - self.last_trade_time[symbol]).
                 # TP
                 if (t["dir"] == "BUY" and price >= t["tp"]) or \
                    (t["dir"] == "SELL" and price <= t["tp"]):
+
                     send_telegram(f"✅ TP HIT {symbol}")
-self.last_trade_time[symbol] = datetime.now()
-del self.trades[symbol]
+                    self.last_trade_time[symbol] = datetime.now()
+                    del self.trades[symbol]
 
                 # SL
                 elif (t["dir"] == "BUY" and price <= t["sl"]) or \
                      (t["dir"] == "SELL" and price >= t["sl"]):
+
                     send_telegram(f"❌ SL HIT {symbol}")
-self.last_trade_time[symbol] = datetime.now()
-del self.trades[symbol]
+                    self.last_trade_time[symbol] = datetime.now()
+                    del self.trades[symbol]
 
                 # TIME EXIT
                 elif (datetime.now() - t["time"]).seconds > 900:
+
                     send_telegram(f"⏱ TIME EXIT {symbol}")
-self.last_trade_time[symbol] = datetime.now()
-del self.trades[symbol]
+                    self.last_trade_time[symbol] = datetime.now()
+                    del self.trades[symbol]
 
 
 # ================= RUN =================
