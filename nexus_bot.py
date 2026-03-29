@@ -85,7 +85,8 @@ class Bot:
         self.trader = BinanceTrader()
         self.strategy = StrategyEngine()
         self.trades = {}
-        send_telegram("🤖 BOT STARTED SUCCESSFULLY")
+
+        send_telegram("✅ CONNECTED: Bot is live")
 
     def run(self):
 
