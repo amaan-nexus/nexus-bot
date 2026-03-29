@@ -43,14 +43,14 @@ class StrategyEngine:
         high = df["high"].rolling(10).max().iloc[-2]
         low = df["low"].rolling(10).min().iloc[-2]
 
-        # Breakout
-        if price > high:
+        # 🔥 EARLIER BREAKOUT (more trades)
+        if price > high * 0.999:
             return {"signal": "BUY", "entry": price, "sl": price - atr}
 
-        if price < low:
+        if price < low * 1.001:
             return {"signal": "SELL", "entry": price, "sl": price + atr}
 
-        # Trend
+        # 🔥 TREND FOLLOW (backup)
         if last["ema_fast"] > last["ema_slow"]:
             return {"signal": "BUY", "entry": price, "sl": price - atr}
 
@@ -118,16 +118,19 @@ class Bot:
                 t = self.trades[symbol]
                 price = self.trader.get_price(symbol)
 
+                # TP
                 if (t["dir"] == "BUY" and price >= t["tp"]) or \
                    (t["dir"] == "SELL" and price <= t["tp"]):
                     send_telegram(f"✅ TP HIT {symbol}")
                     del self.trades[symbol]
 
+                # SL
                 elif (t["dir"] == "BUY" and price <= t["sl"]) or \
                      (t["dir"] == "SELL" and price >= t["sl"]):
                     send_telegram(f"❌ SL HIT {symbol}")
                     del self.trades[symbol]
 
+                # TIME EXIT
                 elif (datetime.now() - t["time"]).seconds > 900:
                     send_telegram(f"⏱ TIME EXIT {symbol}")
                     del self.trades[symbol]
