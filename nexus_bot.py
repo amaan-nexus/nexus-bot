@@ -1,85 +1,48 @@
-import os, time, logging, requests
+import requests
+import time
+import logging
 from datetime import datetime
-import pandas as pd
-import ta
 
 # ================= CONFIG =================
 CONFIG = {
-    "TRADE_MODE": "DEMO",
+    "TELEGRAM_TOKEN": "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo",
+    "CHAT_ID": "2046394042",
     "MULTI_SYMBOLS": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
-    "BINANCE_INTERVAL": "1m",
-    "COOLDOWN": 600,  # 10 min cooldown
+    "INTERVAL": "5m",
+    "COOLDOWN": 300,  # seconds (5 min)
 }
 
-# ================= TELEGRAM =================
-TELEGRAM_TOKEN = "YOUR_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger()
 
+# ================= TELEGRAM =================
 def send_telegram(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-    except:
-        pass
-
-# ================= LOG =================
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("BOT")
-
-# ================= STRATEGY =================
-class StrategyEngine:
-
-    def analyze(self, df):
-        if len(df) < 50:
-            return {"signal": "WAIT", "entry": 0}
-
-        df["ema_fast"] = ta.trend.ema_indicator(df["close"], 9)
-        df["ema_slow"] = ta.trend.ema_indicator(df["close"], 21)
-        df["atr"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"])
-
-        last = df.iloc[-1]
-        price = last["close"]
-        atr = last["atr"]
-
-        high = df["high"].rolling(10).max().iloc[-2]
-        low = df["low"].rolling(10).min().iloc[-2]
-
-        if price > high * 0.999 and last["ema_fast"] > last["ema_slow"]:
-            return {"signal": "BUY", "entry": price, "sl": price - atr}
-
-        if price < low * 1.001 and last["ema_fast"] < last["ema_slow"]:
-            return {"signal": "SELL", "entry": price, "sl": price + atr}
-
-        if last["ema_fast"] > last["ema_slow"]:
-            return {"signal": "BUY", "entry": price, "sl": price - atr}
-
-        elif last["ema_fast"] < last["ema_slow"]:
-            return {"signal": "SELL", "entry": price, "sl": price + atr}
-
-        return {"signal": "WAIT", "entry": price}
-
+        url = f"https://api.telegram.org/bot{CONFIG['TELEGRAM_TOKEN']}/sendMessage"
+        requests.post(url, json={
+            "chat_id": CONFIG["CHAT_ID"],
+            "text": msg
+        })
+    except Exception as e:
+        log.error(f"Telegram Error: {e}")
 
 # ================= BINANCE =================
 class BinanceTrader:
-
-    def get_candles(self, symbol):
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
-        data = requests.get(url).json()
-
-        df = pd.DataFrame(data, columns=["t","o","h","l","c","v","ct","q","n","tb","tq","i"])
-        df = df.astype(float)
-        df.columns = ["time","open","high","low","close","volume","ct","q","n","tb","tq","i"]
-        return df
-
     def get_price(self, symbol):
-        return float(requests.get(
-            f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        ).json()["price"])
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        return float(requests.get(url).json()["price"])
 
+# ================= STRATEGY =================
+class StrategyEngine:
+    def analyze(self, price):
+        # SIMPLE LOGIC (you can upgrade later)
+        if price % 2 > 1:
+            return {"signal": "BUY", "entry": price, "sl": price * 0.995}
+        else:
+            return {"signal": "SELL", "entry": price, "sl": price * 1.005}
 
 # ================= BOT =================
 class Bot:
-
     def __init__(self):
         self.trader = BinanceTrader()
         self.strategy = StrategyEngine()
@@ -89,81 +52,78 @@ class Bot:
         self.last_signal = {}
         self.last_entry_price = {}
 
-        send_telegram("✅ CONNECTED: Bot is live")
-        send_telegram("TEST MESSAGE 🚀")
+        send_telegram("✅ Bot Connected & Running")
 
     def run(self):
+        while True:
+            for symbol in CONFIG["MULTI_SYMBOLS"]:
+                try:
+                    price = self.trader.get_price(symbol)
+                    res = self.strategy.analyze(price)
 
-        for symbol in CONFIG["MULTI_SYMBOLS"]:
+                    now = datetime.now()
 
-            df = self.trader.get_candles(symbol)
-            res = self.strategy.analyze(df)
+                    last_signal = self.last_signal.get(symbol)
+                    last_price = self.last_entry_price.get(symbol)
 
-            if self.last_signal.get(symbol) != res["signal"]:
-               log.info(f"{symbol} → {res['signal']}")
-                send_telegram(f"DEBUG: {symbol} → {res['signal']}")
+                    # DEBUG (always sends → confirm working)
+                    send_telegram(f"DEBUG {symbol}: {res['signal']} @ {price}")
 
-            now = datetime.now()
+                    # ENTRY CONDITIONS
+                    if (
+                        res["signal"] in ["BUY", "SELL"]
+                        and symbol not in self.trades
+                        and (
+                            last_signal != res["signal"]
+                            or (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
+                        )
+                        and (last_price is None or abs(price - last_price) > 0.002 * price)
+                    ):
 
-            last_price = self.last_entry_price.get(symbol)
-            last_signal = self.last_signal.get(symbol)
+                        self.trades[symbol] = {
+                            "entry": price,
+                            "sl": res["sl"],
+                            "tp": price * (1.02 if res["signal"] == "BUY" else 0.98),
+                            "dir": res["signal"]
+                        }
 
-            # ================= ENTRY =================
-            if (
-                res["signal"] in ["BUY", "SELL"]
-                and symbol not in self.trades
-               and (
-                 res["signal"] != last_signal
-                 or (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
-                and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"])
-            ):
+                        self.last_trade_time[symbol] = now
+                        self.last_signal[symbol] = res["signal"]
+                        self.last_entry_price[symbol] = price
 
-                self.trades[symbol] = {
-                    "entry": res["entry"],
-                    "sl": res["sl"],
-                    "tp": res["entry"] * 1.02,
-                    "dir": res["signal"],
-                    "time": now
-                }
+                        send_telegram(
+                            f"🚀 ENTER {symbol}\n"
+                            f"Type: {res['signal']}\n"
+                            f"Price: {price}\n"
+                            f"SL: {res['sl']}"
+                        )
 
-                self.last_entry_price[symbol] = res["entry"]
-                self.last_signal[symbol] = res["signal"]
-                self.last_trade_time[symbol] = now
+                    # EXIT CONDITIONS
+                    if symbol in self.trades:
+                        trade = self.trades[symbol]
 
-                msg = f"🚀 ENTER {symbol}\nPrice: {res['entry']}\nSL: {res['sl']}"
-                log.info(msg)
-                send_telegram(msg)
+                        if trade["dir"] == "BUY":
+                            if price >= trade["tp"]:
+                                send_telegram(f"✅ TP HIT {symbol}")
+                                del self.trades[symbol]
+                            elif price <= trade["sl"]:
+                                send_telegram(f"❌ SL HIT {symbol}")
+                                del self.trades[symbol]
 
-            # ================= EXIT =================
-            elif symbol in self.trades:
+                        elif trade["dir"] == "SELL":
+                            if price <= trade["tp"]:
+                                send_telegram(f"✅ TP HIT {symbol}")
+                                del self.trades[symbol]
+                            elif price >= trade["sl"]:
+                                send_telegram(f"❌ SL HIT {symbol}")
+                                del self.trades[symbol]
 
-                t = self.trades[symbol]
-                price = self.trader.get_price(symbol)
+                except Exception as e:
+                    log.error(f"{symbol} error: {e}")
 
-                if (t["dir"] == "BUY" and price >= t["tp"]) or \
-                   (t["dir"] == "SELL" and price <= t["tp"]):
-
-                    send_telegram(f"✅ TP HIT {symbol}")
-                    self.last_trade_time[symbol] = datetime.now()
-                    del self.trades[symbol]
-
-                elif (t["dir"] == "BUY" and price <= t["sl"]) or \
-                     (t["dir"] == "SELL" and price >= t["sl"]):
-
-                    send_telegram(f"❌ SL HIT {symbol}")
-                    self.last_trade_time[symbol] = datetime.now()
-                    del self.trades[symbol]
-
-                elif (datetime.now() - t["time"]).seconds > 900:
-
-                    send_telegram(f"⏱ TIME EXIT {symbol}")
-                    self.last_trade_time[symbol] = datetime.now()
-                    del self.trades[symbol]
-
+            time.sleep(10)
 
 # ================= RUN =================
-bot = Bot()
-
-while True:
+if __name__ == "__main__":
+    bot = Bot()
     bot.run()
-    time.sleep(20)  # increased sleep to reduce spam
