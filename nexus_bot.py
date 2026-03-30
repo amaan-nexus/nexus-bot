@@ -101,6 +101,7 @@ class Bot:
 
             if self.last_signal.get(symbol) != res["signal"]:
                log.info(f"{symbol} → {res['signal']}")
+                send_telegram(f"DEBUG: {symbol} → {res['signal']}")
 
             now = datetime.now()
 
@@ -111,8 +112,9 @@ class Bot:
             if (
                 res["signal"] in ["BUY", "SELL"]
                 and symbol not in self.trades
-                and res["signal"] != last_signal
-                and (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
+               and (
+                 res["signal"] != last_signal
+                 or (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
                 and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"])
             ):
 
