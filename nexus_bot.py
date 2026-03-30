@@ -1,87 +1,109 @@
 import requests
 import time
-import logging
 from datetime import datetime
 
-# ================= CONFIG =================
-CONFIG = {
-    "TELEGRAM_TOKEN": "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo",
-    "CHAT_ID": "2046394042",
-    "MULTI_SYMBOLS": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
-}
+TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
+CHAT_ID = "2046394042"
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger()
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
 # ================= TELEGRAM =================
 def send_telegram(msg):
     try:
-        url = f"https://api.telegram.org/bot{CONFIG['TELEGRAM_TOKEN']}/sendMessage"
-        requests.post(url, json={
-            "chat_id": CONFIG["CHAT_ID"],
-            "text": msg
-        })
-    except Exception as e:
-        log.error(f"Telegram Error: {e}")
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    except:
+        pass
 
-# ================= BINANCE =================
-class BinanceTrader:
-    def get_price(self, symbol):
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        return float(requests.get(url).json()["price"])
+# ================= DATA =================
+def get_klines(symbol):
+    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=5m&limit=120"
+    return requests.get(url).json()
 
-# ================= STRATEGY =================
-class StrategyEngine:
-    def analyze(self, price):
-        # SIMPLE DEMO STRATEGY (can upgrade later)
-        if price % 2 > 1:
-            return {"signal": "BUY", "entry": price, "sl": price * 0.995}
-        else:
-            return {"signal": "SELL", "entry": price, "sl": price * 1.005}
+# ================= EMA =================
+def ema(data, period):
+    k = 2 / (period + 1)
+    ema_val = float(data[0][4])
+    for candle in data:
+        price = float(candle[4])
+        ema_val = price * k + ema_val * (1 - k)
+    return ema_val
 
 # ================= BOT =================
 class Bot:
     def __init__(self):
-        self.trader = BinanceTrader()
-        self.strategy = StrategyEngine()
-
-        self.trades = {}        # active trades
-        self.last_signal = {}   # prevent duplicate entries
-
-        send_telegram("✅ Bot Connected & Running")
+        self.trades = {}
+        self.cooldown = {}
 
     def run(self):
+        send_telegram("🏦 HEDGE FUND BOT RUNNING (DEMO MODE)")
+
         while True:
-            for symbol in CONFIG["MULTI_SYMBOLS"]:
-                try:
-                    price = self.trader.get_price(symbol)
-                    res = self.strategy.analyze(price)
+            try:
+                for symbol in SYMBOLS:
+                    data = get_klines(symbol)
+
+                    highs = [float(x[2]) for x in data]
+                    lows = [float(x[3]) for x in data]
+                    closes = [float(x[4]) for x in data]
+
+                    price = closes[-1]
+                    prev_high = highs[-2]
+                    prev_low = lows[-2]
+
+                    ema50 = ema(data, 50)
+
+                    now = datetime.now()
+
+                    # ================= TREND =================
+                    uptrend = price > ema50
+                    downtrend = price < ema50
+
+                    # ================= LIQUIDITY =================
+                    sweep_high = price > prev_high
+                    sweep_low = price < prev_low
+
+                    # ================= STRUCTURE BREAK =================
+                    prev_close = closes[-2]
+                    bullish_shift = price > prev_close
+                    bearish_shift = price < prev_close
 
                     # ================= ENTRY =================
-                    if (
-                        res["signal"] in ["BUY", "SELL"]
-                        and symbol not in self.trades
-                        and res["signal"] != self.last_signal.get(symbol)
-                    ):
+                    if symbol not in self.trades and (now - self.cooldown.get(symbol, now)).seconds > 180:
 
-                        tp = price * (1.02 if res["signal"] == "BUY" else 0.98)
+                        # 🔺 BUY (liquidity sweep below + trend + shift)
+                        if sweep_low and bullish_shift and uptrend:
+                            sl = price * 0.995
+                            tp = price * 1.02
 
-                        self.trades[symbol] = {
-                            "entry": price,
-                            "sl": res["sl"],
-                            "tp": tp,
-                            "dir": res["signal"]
-                        }
+                            self.trades[symbol] = {"dir": "BUY", "tp": tp, "sl": sl}
+                            self.cooldown[symbol] = now
 
-                        self.last_signal[symbol] = res["signal"]
+                            send_telegram(
+                                f"🏦 BUY {symbol}\n"
+                                f"SMC Setup: Liquidity Sweep LOW\n"
+                                f"Trend: UP\n"
+                                f"Price: {round(price,2)}\n"
+                                f"SL: {round(sl,2)}\n"
+                                f"TP: {round(tp,2)}"
+                            )
 
-                        send_telegram(
-                            f"🚀 ENTER {symbol}\n"
-                            f"Type: {res['signal']}\n"
-                            f"Price: {price}\n"
-                            f"SL: {res['sl']}\n"
-                            f"TP: {tp}"
-                        )
+                        # 🔻 SELL (liquidity sweep above + trend + shift)
+                        elif sweep_high and bearish_shift and downtrend:
+                            sl = price * 1.005
+                            tp = price * 0.98
+
+                            self.trades[symbol] = {"dir": "SELL", "tp": tp, "sl": sl}
+                            self.cooldown[symbol] = now
+
+                            send_telegram(
+                                f"🏦 SELL {symbol}\n"
+                                f"SMC Setup: Liquidity Sweep HIGH\n"
+                                f"Trend: DOWN\n"
+                                f"Price: {round(price,2)}\n"
+                                f"SL: {round(sl,2)}\n"
+                                f"TP: {round(tp,2)}"
+                            )
 
                     # ================= EXIT =================
                     if symbol in self.trades:
@@ -91,31 +113,26 @@ class Bot:
                             if price >= trade["tp"]:
                                 send_telegram(f"✅ TP HIT {symbol}")
                                 del self.trades[symbol]
-                                self.last_signal[symbol] = None
 
                             elif price <= trade["sl"]:
                                 send_telegram(f"❌ SL HIT {symbol}")
                                 del self.trades[symbol]
-                                self.last_signal[symbol] = None
 
                         elif trade["dir"] == "SELL":
                             if price <= trade["tp"]:
                                 send_telegram(f"✅ TP HIT {symbol}")
                                 del self.trades[symbol]
-                                self.last_signal[symbol] = None
 
                             elif price >= trade["sl"]:
                                 send_telegram(f"❌ SL HIT {symbol}")
                                 del self.trades[symbol]
-                                self.last_signal[symbol] = None
 
-                except Exception as e:
-                    log.error(f"{symbol} error: {e}")
+                time.sleep(12)
 
-            # 🔥 IMPORTANT DELAY (prevents spam)
-            time.sleep(10)
+            except Exception as e:
+                print("ERROR:", e)
+                time.sleep(5)
 
 # ================= RUN =================
 if __name__ == "__main__":
-    bot = Bot()
-    bot.run()
+    Bot().run()
