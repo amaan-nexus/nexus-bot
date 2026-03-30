@@ -8,8 +8,6 @@ CONFIG = {
     "TELEGRAM_TOKEN": "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo",
     "CHAT_ID": "2046394042",
     "MULTI_SYMBOLS": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
-    "INTERVAL": "5m",
-    "COOLDOWN": 300,  # seconds (5 min)
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -35,7 +33,7 @@ class BinanceTrader:
 # ================= STRATEGY =================
 class StrategyEngine:
     def analyze(self, price):
-        # SIMPLE LOGIC (you can upgrade later)
+        # SIMPLE DEMO STRATEGY (can upgrade later)
         if price % 2 > 1:
             return {"signal": "BUY", "entry": price, "sl": price * 0.995}
         else:
@@ -47,10 +45,8 @@ class Bot:
         self.trader = BinanceTrader()
         self.strategy = StrategyEngine()
 
-        self.trades = {}
-        self.last_trade_time = {}
-        self.last_signal = {}
-        self.last_entry_price = {}
+        self.trades = {}        # active trades
+        self.last_signal = {}   # prevent duplicate entries
 
         send_telegram("✅ Bot Connected & Running")
 
@@ -61,38 +57,33 @@ class Bot:
                     price = self.trader.get_price(symbol)
                     res = self.strategy.analyze(price)
 
-                    now = datetime.now()
-
-                    last_signal = self.last_signal.get(symbol)
-                    last_price = self.last_entry_price.get(symbol)
-
-                    # ENTRY CONDITIONS
+                    # ================= ENTRY =================
                     if (
                         res["signal"] in ["BUY", "SELL"]
                         and symbol not in self.trades
-                        and res["signal"] != last_signal
-                        and (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
+                        and res["signal"] != self.last_signal.get(symbol)
                     ):
+
+                        tp = price * (1.02 if res["signal"] == "BUY" else 0.98)
 
                         self.trades[symbol] = {
                             "entry": price,
                             "sl": res["sl"],
-                            "tp": price * (1.02 if res["signal"] == "BUY" else 0.98),
+                            "tp": tp,
                             "dir": res["signal"]
                         }
 
-                        self.last_trade_time[symbol] = now
                         self.last_signal[symbol] = res["signal"]
-                        self.last_entry_price[symbol] = price
 
                         send_telegram(
                             f"🚀 ENTER {symbol}\n"
                             f"Type: {res['signal']}\n"
                             f"Price: {price}\n"
-                            f"SL: {res['sl']}"
+                            f"SL: {res['sl']}\n"
+                            f"TP: {tp}"
                         )
 
-                    # EXIT CONDITIONS
+                    # ================= EXIT =================
                     if symbol in self.trades:
                         trade = self.trades[symbol]
 
@@ -100,22 +91,29 @@ class Bot:
                             if price >= trade["tp"]:
                                 send_telegram(f"✅ TP HIT {symbol}")
                                 del self.trades[symbol]
+                                self.last_signal[symbol] = None
+
                             elif price <= trade["sl"]:
                                 send_telegram(f"❌ SL HIT {symbol}")
                                 del self.trades[symbol]
+                                self.last_signal[symbol] = None
 
                         elif trade["dir"] == "SELL":
                             if price <= trade["tp"]:
                                 send_telegram(f"✅ TP HIT {symbol}")
                                 del self.trades[symbol]
+                                self.last_signal[symbol] = None
+
                             elif price >= trade["sl"]:
                                 send_telegram(f"❌ SL HIT {symbol}")
                                 del self.trades[symbol]
+                                self.last_signal[symbol] = None
 
                 except Exception as e:
                     log.error(f"{symbol} error: {e}")
 
-            time.sleep(30)
+            # 🔥 IMPORTANT DELAY (prevents spam)
+            time.sleep(10)
 
 # ================= RUN =================
 if __name__ == "__main__":
