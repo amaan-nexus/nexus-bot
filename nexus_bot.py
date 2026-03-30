@@ -8,6 +8,7 @@ CONFIG = {
     "TRADE_MODE": "DEMO",
     "MULTI_SYMBOLS": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
     "BINANCE_INTERVAL": "1m",
+    "COOLDOWN": 600,  # 10 min cooldown
 }
 
 # ================= TELEGRAM =================
@@ -43,14 +44,12 @@ class StrategyEngine:
         high = df["high"].rolling(10).max().iloc[-2]
         low = df["low"].rolling(10).min().iloc[-2]
 
-        # Breakout
         if price > high * 0.999 and last["ema_fast"] > last["ema_slow"]:
             return {"signal": "BUY", "entry": price, "sl": price - atr}
 
         if price < low * 1.001 and last["ema_fast"] < last["ema_slow"]:
             return {"signal": "SELL", "entry": price, "sl": price + atr}
 
-        # Trend fallback
         if last["ema_fast"] > last["ema_slow"]:
             return {"signal": "BUY", "entry": price, "sl": price - atr}
 
@@ -84,9 +83,11 @@ class Bot:
     def __init__(self):
         self.trader = BinanceTrader()
         self.strategy = StrategyEngine()
+
         self.trades = {}
         self.last_trade_time = {}
         self.last_signal = {}
+        self.last_entry_price = {}
 
         send_telegram("✅ CONNECTED: Bot is live")
 
@@ -101,17 +102,18 @@ class Bot:
 
             now = datetime.now()
 
-            # ================= ENTRY =================
-            last_price = getattr(self, "last_entry_price", {}).get(symbol)
-            
-last_signal = self.last_signal.get(symbol)
+            last_price = self.last_entry_price.get(symbol)
+            last_signal = self.last_signal.get(symbol)
 
-if res["signal"] in ["BUY", "SELL"] \
-and symbol not in self.trades \
-and res["signal"] != last_signal \
-and (now - self.last_trade_time.get(symbol, now)).seconds > 600 \
-and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"]):
-    
+            # ================= ENTRY =================
+            if (
+                res["signal"] in ["BUY", "SELL"]
+                and symbol not in self.trades
+                and res["signal"] != last_signal
+                and (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
+                and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"])
+            ):
+
                 self.trades[symbol] = {
                     "entry": res["entry"],
                     "sl": res["sl"],
@@ -119,13 +121,10 @@ and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"]
                     "dir": res["signal"],
                     "time": now
                 }
-    if not hasattr(self, "last_entry_price"):
-       self.last_entry_price = {}
 
-    self.last_entry_price[symbol] = res["entry"]
-    self.last_signal[symbol] = res["signal"]
-
-    self.last_trade_time[symbol] = now
+                self.last_entry_price[symbol] = res["entry"]
+                self.last_signal[symbol] = res["signal"]
+                self.last_trade_time[symbol] = now
 
                 msg = f"🚀 ENTER {symbol}\nPrice: {res['entry']}\nSL: {res['sl']}"
                 log.info(msg)
@@ -137,7 +136,6 @@ and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"]
                 t = self.trades[symbol]
                 price = self.trader.get_price(symbol)
 
-                # TP
                 if (t["dir"] == "BUY" and price >= t["tp"]) or \
                    (t["dir"] == "SELL" and price <= t["tp"]):
 
@@ -145,7 +143,6 @@ and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"]
                     self.last_trade_time[symbol] = datetime.now()
                     del self.trades[symbol]
 
-                # SL
                 elif (t["dir"] == "BUY" and price <= t["sl"]) or \
                      (t["dir"] == "SELL" and price >= t["sl"]):
 
@@ -153,7 +150,6 @@ and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"]
                     self.last_trade_time[symbol] = datetime.now()
                     del self.trades[symbol]
 
-                # TIME EXIT
                 elif (datetime.now() - t["time"]).seconds > 900:
 
                     send_telegram(f"⏱ TIME EXIT {symbol}")
@@ -166,4 +162,4 @@ bot = Bot()
 
 while True:
     bot.run()
-    time.sleep(5)
+    time.sleep(10)  # increased sleep to reduce spam
