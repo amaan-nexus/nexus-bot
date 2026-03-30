@@ -86,6 +86,7 @@ class Bot:
         self.strategy = StrategyEngine()
         self.trades = {}
         self.last_trade_time = {}
+        self.last_signal = {}
 
         send_telegram("✅ CONNECTED: Bot is live")
 
@@ -103,13 +104,13 @@ class Bot:
             # ================= ENTRY =================
             last_price = getattr(self, "last_entry_price", {}).get(symbol)
             
-last_signal = self.trades.get(symbol, {}).get("dir")
+last_signal = self.last_signal.get(symbol)
 
 if res["signal"] in ["BUY", "SELL"] \
 and symbol not in self.trades \
 and res["signal"] != last_signal \
-and (now - self.last_trade_time.get(symbol, now)).seconds > 180 \
-and (last_price is None or abs(res["entry"] - last_price) > 0.0025 * res["entry"]):
+and (now - self.last_trade_time.get(symbol, now)).seconds > 600 \
+and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"]):
     
                 self.trades[symbol] = {
                     "entry": res["entry"],
@@ -122,6 +123,7 @@ and (last_price is None or abs(res["entry"] - last_price) > 0.0025 * res["entry"
        self.last_entry_price = {}
 
     self.last_entry_price[symbol] = res["entry"]
+    self.last_signal[symbol] = res["signal"]
 
     self.last_trade_time[symbol] = now
 
