@@ -90,6 +90,7 @@ class Bot:
         self.last_entry_price = {}
 
         send_telegram("✅ CONNECTED: Bot is live")
+        send_telegram("TEST MESSAGE 🚀")
 
     def run(self):
 
@@ -110,8 +111,10 @@ class Bot:
             if (
                 res["signal"] in ["BUY", "SELL"]
                 and symbol not in self.trades
-                and res["signal"] != last_signal
-                and (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
+                and (
+                  res["signal"] != last_signal or
+                  (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
+                )
                 and (last_price is None or abs(res["entry"] - last_price) > 0.005 * res["entry"])
             ):
 
