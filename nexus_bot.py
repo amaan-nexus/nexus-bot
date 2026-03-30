@@ -66,18 +66,12 @@ class Bot:
                     last_signal = self.last_signal.get(symbol)
                     last_price = self.last_entry_price.get(symbol)
 
-                    # DEBUG (always sends → confirm working)
-                    send_telegram(f"DEBUG {symbol}: {res['signal']} @ {price}")
-
                     # ENTRY CONDITIONS
                     if (
                         res["signal"] in ["BUY", "SELL"]
                         and symbol not in self.trades
-                        and (
-                            last_signal != res["signal"]
-                            or (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
-                        )
-                        and (last_price is None or abs(price - last_price) > 0.002 * price)
+                        and res["signal"] != last_signal
+                        and (now - self.last_trade_time.get(symbol, now)).seconds > CONFIG["COOLDOWN"]
                     ):
 
                         self.trades[symbol] = {
@@ -121,7 +115,7 @@ class Bot:
                 except Exception as e:
                     log.error(f"{symbol} error: {e}")
 
-            time.sleep(10)
+            time.sleep(30)
 
 # ================= RUN =================
 if __name__ == "__main__":
