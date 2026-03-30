@@ -98,7 +98,8 @@ class Bot:
             df = self.trader.get_candles(symbol)
             res = self.strategy.analyze(df)
 
-            log.info(f"{symbol} → {res['signal']}")
+            if self.last_signal.get(symbol) != res["signal"]:
+               log.info(f"{symbol} → {res['signal']}")
 
             now = datetime.now()
 
@@ -162,4 +163,4 @@ bot = Bot()
 
 while True:
     bot.run()
-    time.sleep(10)  # increased sleep to reduce spam
+    time.sleep(20)  # increased sleep to reduce spam
