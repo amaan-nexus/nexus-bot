@@ -102,10 +102,13 @@ class Bot:
 
             # ================= ENTRY =================
             last_price = getattr(self, "last_entry_price", {}).get(symbol)
+            
+last_signal = self.trades.get(symbol, {}).get("dir")
 
 if res["signal"] in ["BUY", "SELL"] \
 and symbol not in self.trades \
-and (symbol not in self.last_trade_time or (now - self.last_trade_time[symbol]).seconds > 900) \
+and res["signal"] != last_signal \
+and (now - self.last_trade_time.get(symbol, now)).seconds > 180 \
 and (last_price is None or abs(res["entry"] - last_price) > 0.0025 * res["entry"]):
     
                 self.trades[symbol] = {
