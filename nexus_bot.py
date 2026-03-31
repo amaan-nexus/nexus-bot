@@ -1,187 +1,117 @@
 import time
 import requests
+import random
 from datetime import datetime
-
-# ================= CONFIG =================
-CONFIG = {
-    "SYMBOLS": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
-    "INTERVAL": "1m",
-    "COOLDOWN": 120,   # seconds
-}
 
 TELEGRAM_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
 CHAT_ID = "2046394042"
 
-# ================= TELEGRAM =================
-def send_telegram(msg):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
-    except:
-        pass
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
-# ================= MARKET DATA =================
+active_trades = {}
+cooldown = {}
+
+MAX_ACTIVE_TRADES = 2
+COOLDOWN_TIME = 300  # 5 minutes
+
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+
 def get_price(symbol):
     url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    return float(requests.get(url).json()["price"])
+    return float(requests.get(url).json()['price'])
 
-def get_klines(symbol):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=5"
-    data = requests.get(url).json()
-    highs = [float(x[2]) for x in data]
-    lows = [float(x[3]) for x in data]
-    closes = [float(x[4]) for x in data]
-    return highs, lows, closes
+def generate_signal():
+    return random.choice(["BUY", "SELL", None])
 
-# ================= STRATEGY =================
-def analyze(symbol):
-    highs, lows, closes = get_klines(symbol)
+def calculate_sl_tp(price, side, strength):
+    sl_percent = 0.002  # 0.2% minimum SL
 
-    last = closes[-1]
-    prev = closes[-2]
-
-    # Simple trend logic
-    if last > prev:
-        signal = "BUY"
-    elif last < prev:
-        signal = "SELL"
+    if strength == 3:
+        rr = 3
     else:
-        return None
+        rr = 2
 
-    sl = lows[-1] if signal == "BUY" else highs[-1]
-
-    return {
-        "signal": signal,
-        "sl": sl
-    }
-
-def get_trend(symbol):
-    highs, lows, closes = get_klines(symbol)
-    return "BUY" if closes[-1] > closes[-3] else "SELL"
-
-def check_momentum(symbol):
-    highs, lows, closes = get_klines(symbol)
-    return abs(closes[-1] - closes[-2]) > 0.001 * closes[-1]
-
-# ================= ADAPTIVE RR =================
-def calculate_rr(strength):
-    if strength >= 3:
-        return 3.0
-    elif strength == 2:
-        return 2.0
+    if side == "BUY":
+        sl = price * (1 - sl_percent)
+        tp = price + (price - sl) * rr
     else:
-        return None
+        sl = price * (1 + sl_percent)
+        tp = price - (sl - price) * rr
 
-def get_strength(res, trend, momentum):
-    score = 0
+    return sl, tp, rr
 
-    if res["signal"] in ["BUY", "SELL"]:
-        score += 1
-    if trend == res["signal"]:
-        score += 1
-    if momentum:
-        score += 1
+def check_trade_exit(symbol, trade, current_price):
+    if trade['side'] == "BUY":
+        if current_price <= trade['sl']:
+            send_telegram(f"❌ SL HIT {symbol}")
+            cooldown[symbol] = time.time()
+            return True
+        elif current_price >= trade['tp']:
+            send_telegram(f"✅ TP HIT {symbol}")
+            return True
+    else:
+        if current_price >= trade['sl']:
+            send_telegram(f"❌ SL HIT {symbol}")
+            cooldown[symbol] = time.time()
+            return True
+        elif current_price <= trade['tp']:
+            send_telegram(f"✅ TP HIT {symbol}")
+            return True
+    return False
 
-    return score
+send_telegram("⚖️ PERFECT BALANCE MODE ACTIVE (DEMO)")
 
-# ================= BOT =================
-class Bot:
-    def __init__(self):
-        self.trades = {}
-        self.last_trade_time = {}
+while True:
+    try:
+        for symbol in symbols:
 
-    def run(self):
-        send_telegram("⚖️ PERFECT BALANCE MODE ACTIVE (DEMO)")
+            price = get_price(symbol)
 
-        while True:
-            for symbol in CONFIG["SYMBOLS"]:
-                try:
-                    price = get_price(symbol)
-                    res = analyze(symbol)
+            # Check existing trades
+            if symbol in active_trades:
+                if check_trade_exit(symbol, active_trades[symbol], price):
+                    del active_trades[symbol]
+                continue
 
-                    if not res:
-                        continue
+            # Limit trades
+            if len(active_trades) >= MAX_ACTIVE_TRADES:
+                continue
 
-                    now = datetime.now()
+            # Cooldown check
+            if symbol in cooldown:
+                if time.time() - cooldown[symbol] < COOLDOWN_TIME:
+                    continue
 
-                    # cooldown
-                    if symbol in self.last_trade_time:
-                        diff = (now - self.last_trade_time[symbol]).seconds
-                        if diff < CONFIG["COOLDOWN"]:
-                            continue
+            signal = generate_signal()
 
-                    # already active trade
-                    if symbol in self.trades:
-                        self.check_exit(symbol, price)
-                        continue
+            if signal is None:
+                continue
 
-                    trend = get_trend(symbol)
-                    momentum = check_momentum(symbol)
+            strength = random.choice([2, 3])
 
-                    strength = get_strength(res, trend, momentum)
-                    rr = calculate_rr(strength)
+            sl, tp, rr = calculate_sl_tp(price, signal, strength)
 
-                    if rr is None:
-                        continue
+            active_trades[symbol] = {
+                "side": signal,
+                "entry": price,
+                "sl": sl,
+                "tp": tp
+            }
 
-                    sl = res["sl"]
+            msg = f"""🚀 ENTER {symbol}
+Type: {signal}
+Price: {round(price, 2)}
+SL: {round(sl, 2)}
+TP: {round(tp, 2)}
+R:R: {rr}
+Strength: {strength}/3"""
 
-                    # TP calculation
-                    if res["signal"] == "BUY":
-                        tp = price * (1 + 0.01 * rr)
-                    else:
-                        tp = price * (1 - 0.01 * rr)
+            send_telegram(msg)
 
-                    self.trades[symbol] = {
-                        "entry": price,
-                        "sl": sl,
-                        "tp": tp,
-                        "dir": res["signal"],
-                        "rr": rr
-                    }
+        time.sleep(15)
 
-                    self.last_trade_time[symbol] = now
-
-                    send_telegram(
-                        f"🚀 ENTER {symbol}\n"
-                        f"{res['signal']} @ {price}\n"
-                        f"SL: {sl}\n"
-                        f"TP: {tp}\n"
-                        f"R:R: {rr}\n"
-                        f"Strength: {strength}/3"
-                    )
-
-                except Exception as e:
-                    print("Error:", e)
-
-            time.sleep(5)
-
-    def check_exit(self, symbol, price):
-        trade = self.trades[symbol]
-
-        highs, lows, closes = get_klines(symbol)
-        high = highs[-1]
-        low = lows[-1]
-
-        if trade["dir"] == "BUY":
-            if low <= trade["sl"]:
-                send_telegram(f"❌ SL HIT {symbol}")
-                del self.trades[symbol]
-
-            elif high >= trade["tp"]:
-                send_telegram(f"✅ TP HIT {symbol}")
-                del self.trades[symbol]
-
-        elif trade["dir"] == "SELL":
-            if high >= trade["sl"]:
-                send_telegram(f"❌ SL HIT {symbol}")
-                del self.trades[symbol]
-
-            elif low <= trade["tp"]:
-                send_telegram(f"✅ TP HIT {symbol}")
-                del self.trades[symbol]
-
-# ================= RUN =================
-if __name__ == "__main__":
-    bot = Bot()
-    bot.run()
+    except Exception as e:
+        print("Error:", e)
+        time.sleep(10)
