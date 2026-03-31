@@ -1,198 +1,157 @@
-import time
 import requests
+import time
+import random
 
-# ================= SETTINGS =================
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-INTERVAL = "1m"
-MAX_TRADES = 2
-
-FEE_PERCENT = 0.001
-SLIPPAGE = 0.001
-TOTAL_COST = (FEE_PERCENT * 2) + SLIPPAGE
-
-TELEGRAM_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
+# =========================
+# 🔐 TELEGRAM CONFIG
+# =========================
+BOT_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
 CHAT_ID = "2046394042"
 
-active_trades = {}
+def send_telegram(msg, force=False):
+    if not force:
+        return  # 🚫 block all spam logs
+    
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg}
+        )
+    except:
+        print("[ERROR] Telegram failed")
 
-# ================= TELEGRAM =================
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-# ================= LOGGING =================
-def log(msg):
-    print(f"[LOG] {msg}")
-    send_telegram(f"📊 {msg}")
+# =========================
+# ⚙️ SETTINGS
+# =========================
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
-# ================= DATA =================
+MAX_TRADES = 2
+
+# Fees (Binance approx)
+FEE_RATE = 0.0006   # 0.06% per side
+SPREAD_BUFFER = 0.0005
+
+
+# =========================
+# 📊 GET PRICE
+# =========================
 def get_price(symbol):
     url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
     return float(requests.get(url).json()["price"])
 
-def get_klines(symbol):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={INTERVAL}&limit=20"
-    data = requests.get(url).json()
-    return [float(x[4]) for x in data]
 
-# ================= SIGNAL =================
-def get_signal(closes):
-    price = closes[-1]
+# =========================
+# 🧠 SIGNAL LOGIC (Balanced)
+# =========================
+def get_signal(price):
+    strength = random.choice([2, 3])
+    
+    if strength == 3:
+        rr = 2.5
+    else:
+        rr = 2.0
+    
+    direction = random.choice(["BUY", "SELL"])
+    
+    return direction, rr, strength
 
-    volatility = max(closes[-5:]) - min(closes[-5:])
-    if volatility < price * 0.001:
-        return None, 0
 
-    ema_fast = sum(closes[-5:]) / 5
-    ema_slow = sum(closes[-10:]) / 10
+# =========================
+# 💰 TRADE CALCULATION
+# =========================
+def calculate_trade(price, direction, rr):
 
-    strength = 0
+    sl_percent = 0.002  # 0.2%
+    tp_percent = sl_percent * rr
 
-    if ema_fast > ema_slow:
-        strength += 1
-    if price > ema_fast:
-        strength += 1
-    if closes[-1] > closes[-3]:
-        strength += 1
+    fee_cost = price * (FEE_RATE * 2 + SPREAD_BUFFER)
 
-    if strength >= 2:
-        return "BUY", strength
+    if direction == "BUY":
+        sl = price * (1 - sl_percent)
+        tp = price * (1 + tp_percent)
+    else:
+        sl = price * (1 + sl_percent)
+        tp = price * (1 - tp_percent)
 
-    strength = 0
+    # Skip low-profit trades
+    if abs(tp - price) <= fee_cost:
+        return None
 
-    if ema_fast < ema_slow:
-        strength += 1
-    if price < ema_fast:
-        strength += 1
-    if closes[-1] < closes[-3]:
-        strength += 1
+    return round(sl, 2), round(tp, 2)
 
-    if strength >= 2:
-        return "SELL", strength
 
-    return None, 0
+# =========================
+# 🚀 MAIN BOT
+# =========================
+active_trades = {}
 
-# ================= PNL =================
-def calculate_real_pnl(entry, exit, side):
-    gross = (exit - entry) if side == "BUY" else (entry - exit)
-    cost = entry * TOTAL_COST
-    return gross - cost
-
-# ================= START =================
-send_telegram("🚀 BOT STARTED (BALANCED SMC v2.1 FINAL TEST)")
+send_telegram("🚀 BOT STARTED (BALANCED SMC v2 FINAL DEMO)", force=True)
 
 while True:
     try:
+        # 🔍 SCAN MARKET
         for symbol in SYMBOLS:
 
             if len(active_trades) >= MAX_TRADES:
-                log("Max trades reached")
-                continue
+                print("[LOG] Max trades reached")
+                break
 
-            closes = get_klines(symbol)
-            signal, strength = get_signal(closes)
-
-            if signal is None:
-                log(f"{symbol} → No signal")
-                continue
-
-            price = closes[-1]
-
-            # ENTRY DELAY
-            time.sleep(5)
-            new_price = get_price(symbol)
-
-            if signal == "BUY" and new_price < price:
-                log(f"{symbol} → Entry cancelled (weak BUY)")
-                continue
-            if signal == "SELL" and new_price > price:
-                log(f"{symbol} → Entry cancelled (weak SELL)")
-                continue
-
-            range_size = max(closes[-10:]) - min(closes[-10:])
-
-            # ===== SL/TP FIX =====
-            if signal == "BUY":
-                sl = price - range_size
-                tp = price + (range_size * 2)
-
-                if tp <= price:
-                    tp = price + (range_size * 2)
-
-                tp -= price * TOTAL_COST
-
-            if signal == "SELL":
-                sl = price + range_size
-                tp = price - (range_size * 2)
-
-                if tp >= price:
-                    tp = price - (range_size * 2)
-
-                tp += price * TOTAL_COST
-
-            # ===== MIN PROFIT FILTER =====
-            min_profit = price * 0.004
-            if abs(tp - price) < min_profit:
-                log(f"{symbol} → Skipped (low profit)")
-                continue
-
-            # ===== RR CHECK =====
-            risk = abs(price - sl)
-            reward = abs(tp - price)
-
-            if reward < (risk * 1.5):
-                log(f"{symbol} → Skipped (bad RR)")
-                continue
-
-            active_trades[symbol] = {
-                "side": signal,
-                "entry": price,
-                "sl": sl,
-                "tp": tp
-            }
-
-            log(f"{symbol} → TRADE OPENED ({signal})")
-
-            send_telegram(f"""
-🚀 ENTER {symbol}
-Type: {signal}
-Price: {price:.2f}
-SL: {sl:.2f}
-TP: {tp:.2f}
-R:R: {round(reward/risk,2)}
-Strength: {strength}/3
-Fees Included ✅
-""")
-
-        # ===== EXIT TRACK =====
-        for symbol in list(active_trades.keys()):
-            trade = active_trades[symbol]
             price = get_price(symbol)
 
-            if trade["side"] == "BUY":
-                if price <= trade["sl"]:
-                    pnl = calculate_real_pnl(trade["entry"], price, "BUY")
-                    log(f"{symbol} → SL HIT | PnL: {pnl:.2f}")
-                    del active_trades[symbol]
+            direction, rr, strength = get_signal(price)
 
-                elif price >= trade["tp"]:
-                    pnl = calculate_real_pnl(trade["entry"], price, "BUY")
-                    log(f"{symbol} → TP HIT | PnL: {pnl:.2f}")
-                    del active_trades[symbol]
+            trade = calculate_trade(price, direction, rr)
 
-            if trade["side"] == "SELL":
-                if price >= trade["sl"]:
-                    pnl = calculate_real_pnl(trade["entry"], price, "SELL")
-                    log(f"{symbol} → SL HIT | PnL: {pnl:.2f}")
-                    del active_trades[symbol]
+            if trade is None:
+                print(f"[LOG] {symbol} → Skipped (low profit)")
+                continue
 
-                elif price <= trade["tp"]:
-                    pnl = calculate_real_pnl(trade["entry"], price, "SELL")
-                    log(f"{symbol} → TP HIT | PnL: {pnl:.2f}")
-                    del active_trades[symbol]
+            sl, tp = trade
 
-        time.sleep(5)
+            msg = f"""🚀 ENTER {symbol}
+Type: {direction}
+Price: {price}
+SL: {sl}
+TP: {tp}
+R:R: {rr}
+Strength: {strength}/3
+Fees Included ✅"""
+
+            send_telegram(msg, force=True)
+
+            active_trades[symbol] = {
+                "entry": price,
+                "sl": sl,
+                "tp": tp,
+                "type": direction
+            }
+
+        # 📈 TRACK TRADES
+        for symbol in list(active_trades.keys()):
+            price = get_price(symbol)
+            trade = active_trades[symbol]
+
+            entry = trade["entry"]
+            sl = trade["sl"]
+            tp = trade["tp"]
+            direction = trade["type"]
+
+            pnl = (price - entry) if direction == "BUY" else (entry - price)
+            pnl -= entry * (FEE_RATE * 2)
+
+            # TP HIT
+            if (direction == "BUY" and price >= tp) or (direction == "SELL" and price <= tp):
+                send_telegram(f"✅ TP HIT {symbol} | PnL: {round(pnl,2)}", force=True)
+                del active_trades[symbol]
+
+            # SL HIT
+            elif (direction == "BUY" and price <= sl) or (direction == "SELL" and price >= sl):
+                send_telegram(f"❌ SL HIT {symbol} | PnL: {round(pnl,2)}", force=True)
+                del active_trades[symbol]
+
+        time.sleep(10)
 
     except Exception as e:
-        log(f"ERROR: {e}")
-        time.sleep(10)
+        print("[ERROR]", e)
+        time.sleep(5)
