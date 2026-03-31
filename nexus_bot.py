@@ -8,7 +8,7 @@ CHAT_ID = "2046394042"
 
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
-COOLDOWN = 90
+COOLDOWN = 60
 SLEEP = 5
 
 # ================= TELEGRAM =================
@@ -32,11 +32,11 @@ class Bot:
         self.last_trade_time = {}
         self.trades = {}
 
-        # ===== TRACKING =====
         self.trade_history = []
         self.win = 0
         self.loss = 0
 
+    # ===== PERFECT BALANCE ANALYSIS =====
     def analyze(self, symbol, price):
         last = self.last_price.get(symbol)
 
@@ -46,15 +46,23 @@ class Bot:
 
         change = (price - last) / last
 
-        # ===== BALANCED LOGIC =====
-        momentum = abs(change) > 0.0008
+        # ===== MARKET ACTIVITY FILTER =====
+        volatility = abs(change) > 0.0006
+
+        # ===== MOMENTUM =====
+        momentum = abs(change) > 0.0009
+
+        # ===== STRUCTURE =====
         structure = (price > last * 1.001) or (price < last * 0.999)
-        liquidity = abs(price - last) > 0.001 * price
+
+        # ===== LIQUIDITY MOVE =====
+        liquidity = abs(price - last) > 0.0012 * price
 
         score = sum([momentum, structure, liquidity])
 
+        # ===== FINAL SIGNAL =====
         signal = None
-        if score >= 2:
+        if volatility and score >= 2:
             signal = "BUY" if change > 0 else "SELL"
 
         self.last_price[symbol] = price
@@ -62,13 +70,14 @@ class Bot:
         if signal:
             return {
                 "signal": signal,
-                "sl": price * (0.995 if signal == "BUY" else 1.005),
-                "tp": price * (1.01 if signal == "BUY" else 0.99),
+                "sl": price * (0.996 if signal == "BUY" else 1.004),
+                "tp": price * (1.012 if signal == "BUY" else 0.988),
                 "entry": price
             }
 
         return None
 
+    # ===== DAILY REPORT =====
     def send_daily_report(self):
         total = self.win + self.loss
         winrate = round((self.win / total) * 100, 2) if total > 0 else 0
@@ -95,7 +104,7 @@ class Bot:
         send_telegram(msg)
 
     def run(self):
-        send_telegram("🚀 BOT RUNNING (PHASE 2 TRACKING ENABLED)")
+        send_telegram("⚖️ PERFECT BALANCE MODE ACTIVE (DEMO)")
 
         while True:
             now = datetime.now()
@@ -121,7 +130,6 @@ class Bot:
                             self.last_signal[symbol] = res["signal"]
                             self.last_trade_time[symbol] = now
 
-                            # R:R calculation
                             rr = round(abs((res["tp"] - res["entry"]) / (res["entry"] - res["sl"])), 2)
 
                             self.trade_history.append({
