@@ -1,164 +1,201 @@
 import requests
 import time
-import sys
 from datetime import datetime
 
+# ================= CONFIG =================
 TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
 CHAT_ID = "2046394042"
 
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
-# ================= LOGGER =================
-def log(msg):
-    print(msg, flush=True)
-    sys.stdout.flush()
+COOLDOWN = 90
+SLEEP = 5
 
 # ================= TELEGRAM =================
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=5)
-    except Exception as e:
-        log(f"Telegram Error: {e}")
+        requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+    except:
+        pass
 
-# ================= DATA =================
-def get_klines(symbol):
-    try:
-        url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=5m&limit=120"
-        return requests.get(url, timeout=5).json()
-    except Exception as e:
-        log(f"API Error {symbol}: {e}")
-        return None
-
-# ================= EMA =================
-def ema(data, period):
-    k = 2 / (period + 1)
-    ema_val = float(data[0][4])
-    for candle in data:
-        price = float(candle[4])
-        ema_val = price * k + ema_val * (1 - k)
-    return ema_val
+# ================= PRICE =================
+def get_price(symbol):
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+    return float(requests.get(url).json()["price"])
 
 # ================= BOT =================
 class Bot:
     def __init__(self):
+        self.last_price = {}
+        self.last_signal = {}
+        self.last_trade_time = {}
         self.trades = {}
-        self.cooldown = {}
+
+        # ===== TRACKING =====
+        self.trade_history = []
+        self.win = 0
+        self.loss = 0
+
+    def analyze(self, symbol, price):
+        last = self.last_price.get(symbol)
+
+        if last is None:
+            self.last_price[symbol] = price
+            return None
+
+        change = (price - last) / last
+
+        # ===== BALANCED LOGIC =====
+        momentum = abs(change) > 0.0008
+        structure = (price > last * 1.001) or (price < last * 0.999)
+        liquidity = abs(price - last) > 0.001 * price
+
+        score = sum([momentum, structure, liquidity])
+
+        signal = None
+        if score >= 2:
+            signal = "BUY" if change > 0 else "SELL"
+
+        self.last_price[symbol] = price
+
+        if signal:
+            return {
+                "signal": signal,
+                "sl": price * (0.995 if signal == "BUY" else 1.005),
+                "tp": price * (1.01 if signal == "BUY" else 0.99),
+                "entry": price
+            }
+
+        return None
+
+    def send_daily_report(self):
+        total = self.win + self.loss
+        winrate = round((self.win / total) * 100, 2) if total > 0 else 0
+
+        msg = "📊 DAILY REPORT\n\n"
+        msg += f"Total Trades: {total}\n"
+        msg += f"Wins: {self.win} ✅\n"
+        msg += f"Loss: {self.loss} ❌\n"
+        msg += f"Win Rate: {winrate}%\n\n"
+
+        pnl = 0
+        msg += "Trades:\n"
+
+        for t in self.trade_history:
+            if t["result"] == "TP":
+                msg += f"{t['symbol']} {t['dir']} | TP ✅ | R:R {t['rr']}\n"
+                pnl += t["rr"]
+            elif t["result"] == "SL":
+                msg += f"{t['symbol']} {t['dir']} | SL ❌ | R:R {t['rr']}\n"
+                pnl -= 1
+
+        msg += f"\nPnL (R): {round(pnl,2)}"
+
+        send_telegram(msg)
 
     def run(self):
-        log("BOT STARTED")
-        send_telegram("🏦 HEDGE FUND BOT RUNNING (DEMO MODE)")
+        send_telegram("🚀 BOT RUNNING (PHASE 2 TRACKING ENABLED)")
 
         while True:
-            try:
-                for symbol in SYMBOLS:
+            now = datetime.now()
 
-                    data = get_klines(symbol)
-                    if not data:
-                        continue
+            for symbol in SYMBOLS:
+                try:
+                    price = get_price(symbol)
+                    print(f"{symbol} | {price}")
 
-                    highs = [float(x[2]) for x in data]
-                    lows = [float(x[3]) for x in data]
-                    closes = [float(x[4]) for x in data]
+                    res = self.analyze(symbol, price)
 
-                    price = closes[-1]
-                    prev_price = closes[-2]
+                    last_signal = self.last_signal.get(symbol)
+                    last_trade = self.last_trade_time.get(symbol)
 
-                    prev_high = highs[-2]
-                    prev_low = lows[-2]
+                    # ===== ENTRY =====
+                    if res:
+                        if (
+                            symbol not in self.trades and
+                            res["signal"] != last_signal and
+                            (last_trade is None or (now - last_trade).seconds > COOLDOWN)
+                        ):
+                            self.trades[symbol] = res
+                            self.last_signal[symbol] = res["signal"]
+                            self.last_trade_time[symbol] = now
 
-                    ema50 = ema(data, 50)
+                            # R:R calculation
+                            rr = round(abs((res["tp"] - res["entry"]) / (res["entry"] - res["sl"])), 2)
 
-                    now = datetime.now()
-
-                    log(f"{symbol} | Price: {price}")
-
-                    # ================= TREND =================
-                    uptrend = price > ema50
-                    downtrend = price < ema50
-
-                    # ================= LIQUIDITY =================
-                    sweep_high = price > prev_high
-                    sweep_low = price < prev_low
-
-                    # ================= CONFIRMATION =================
-                    bullish_confirm = price > prev_price
-                    bearish_confirm = price < prev_price
-
-                    # ================= ENTRY =================
-                    if symbol not in self.trades and (now - self.cooldown.get(symbol, now)).seconds > 180:
-
-                        # BUY
-                        if sweep_low and bullish_confirm and uptrend:
-                            sl = price * 0.995
-                            tp = price * 1.02
-
-                            self.trades[symbol] = {
-                                "dir": "BUY",
-                                "tp": tp,
-                                "sl": sl,
-                                "entry": price
-                            }
-
-                            self.cooldown[symbol] = now
+                            self.trade_history.append({
+                                "symbol": symbol,
+                                "dir": res["signal"],
+                                "rr": rr,
+                                "result": "OPEN"
+                            })
 
                             send_telegram(
-                                f"🏦 BUY {symbol}\n"
-                                f"Price: {round(price,2)}\n"
-                                f"SL: {round(sl,2)}\n"
-                                f"TP: {round(tp,2)}"
+                                f"🚀 ENTER {symbol}\n"
+                                f"{res['signal']} @ {price}\n"
+                                f"SL: {res['sl']}\n"
+                                f"TP: {res['tp']}\n"
+                                f"R:R: {rr}"
                             )
 
-                        # SELL
-                        elif sweep_high and bearish_confirm and downtrend:
-                            sl = price * 1.005
-                            tp = price * 0.98
-
-                            self.trades[symbol] = {
-                                "dir": "SELL",
-                                "tp": tp,
-                                "sl": sl,
-                                "entry": price
-                            }
-
-                            self.cooldown[symbol] = now
-
-                            send_telegram(
-                                f"🏦 SELL {symbol}\n"
-                                f"Price: {round(price,2)}\n"
-                                f"SL: {round(sl,2)}\n"
-                                f"TP: {round(tp,2)}"
-                            )
-
-                    # ================= EXIT =================
+                    # ===== EXIT =====
                     if symbol in self.trades:
                         trade = self.trades[symbol]
 
-                        # BUY EXIT
-                        if trade["dir"] == "BUY":
+                        if trade["signal"] == "BUY":
                             if price >= trade["tp"]:
+                                self.win += 1
                                 send_telegram(f"✅ TP HIT {symbol}")
                                 del self.trades[symbol]
+
+                                for t in self.trade_history[::-1]:
+                                    if t["symbol"] == symbol and t["result"] == "OPEN":
+                                        t["result"] = "TP"
+                                        break
 
                             elif price <= trade["sl"]:
+                                self.loss += 1
                                 send_telegram(f"❌ SL HIT {symbol}")
                                 del self.trades[symbol]
 
-                        # SELL EXIT
-                        elif trade["dir"] == "SELL":
+                                for t in self.trade_history[::-1]:
+                                    if t["symbol"] == symbol and t["result"] == "OPEN":
+                                        t["result"] = "SL"
+                                        break
+
+                        elif trade["signal"] == "SELL":
                             if price <= trade["tp"]:
+                                self.win += 1
                                 send_telegram(f"✅ TP HIT {symbol}")
                                 del self.trades[symbol]
 
+                                for t in self.trade_history[::-1]:
+                                    if t["symbol"] == symbol and t["result"] == "OPEN":
+                                        t["result"] = "TP"
+                                        break
+
                             elif price >= trade["sl"]:
+                                self.loss += 1
                                 send_telegram(f"❌ SL HIT {symbol}")
                                 del self.trades[symbol]
 
-                time.sleep(10)
+                                for t in self.trade_history[::-1]:
+                                    if t["symbol"] == symbol and t["result"] == "OPEN":
+                                        t["result"] = "SL"
+                                        break
 
-            except Exception as e:
-                log(f"MAIN ERROR: {e}")
-                time.sleep(5)
+                except Exception as e:
+                    print("Error:", e)
+
+            # ===== DAILY REPORT =====
+            if now.hour == 23 and now.minute == 59:
+                self.send_daily_report()
+                self.trade_history = []
+                self.win = 0
+                self.loss = 0
+
+            time.sleep(SLEEP)
 
 # ================= RUN =================
 if __name__ == "__main__":
