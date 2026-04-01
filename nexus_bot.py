@@ -4,9 +4,9 @@ import time
 # ================= CONFIG =================
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 
-CAPITAL = 30000
+CAPITAL = 300  # USDT
 RISK_PERCENT = 1
-RISK_AMOUNT = CAPITAL * RISK_PERCENT / 100  # ₹300 risk
+RISK_AMOUNT = CAPITAL * RISK_PERCENT / 100  # 3 USDT
 
 MAX_TRADES = 2
 
@@ -66,7 +66,6 @@ def generate_signal(symbol):
     ema_slow = ema(closes[-50:], 50)
     rsi_val = rsi(closes)
 
-    # TREND + MOMENTUM
     if ema_fast > ema_slow and rsi_val > 55:
         direction = "BUY"
     elif ema_fast < ema_slow and rsi_val < 45:
@@ -74,7 +73,6 @@ def generate_signal(symbol):
     else:
         return None
 
-    # STRUCTURE SL
     recent_high = max(closes[-10:])
     recent_low = min(closes[-10:])
 
@@ -84,6 +82,11 @@ def generate_signal(symbol):
     else:
         sl = recent_high
         tp = price - (sl - price) * 2
+
+    # ===== SL FILTER =====
+    min_sl_distance = price * 0.001  # 0.1%
+    if abs(price - sl) < min_sl_distance:
+        return None
 
     return direction, price, sl, tp
 
@@ -96,7 +99,7 @@ def calculate_quantity(entry, sl):
     return qty
 
 # ================= START =================
-send_telegram("🚀 v3 BOT STARTED (REAL + BE TRAILING)")
+send_telegram("🚀 v3.2 BOT STARTED (USDT MODE + BE + FILTER)")
 
 while True:
     try:
@@ -107,7 +110,6 @@ while True:
                 continue
 
             signal = generate_signal(symbol)
-
             if signal is None:
                 continue
 
@@ -136,7 +138,7 @@ Entry: {round(entry,2)}
 SL: {round(sl,2)}
 TP: {round(tp,2)}
 Qty: {round(qty,4)}
-Risk: ₹{RISK_AMOUNT}
+Risk: {RISK_AMOUNT} USDT
 """)
 
         # ===== TRACK =====
@@ -169,24 +171,24 @@ Risk: ₹{RISK_AMOUNT}
 
                 if price <= trade["sl"]:
                     pnl = (price - entry) * qty
-                    send_telegram(f"⚖️ EXIT {trade['symbol']} | ₹{round(pnl,2)}")
+                    send_telegram(f"⚖️ EXIT {trade['symbol']} | {round(pnl,2)} USDT")
                     active_trades.remove(trade)
 
                 elif price >= tp:
                     pnl = (price - entry) * qty
-                    send_telegram(f"✅ TP HIT {trade['symbol']} | ₹{round(pnl,2)}")
+                    send_telegram(f"✅ TP HIT {trade['symbol']} | {round(pnl,2)} USDT")
                     active_trades.remove(trade)
 
             else:
 
                 if price >= trade["sl"]:
                     pnl = (entry - price) * qty
-                    send_telegram(f"⚖️ EXIT {trade['symbol']} | ₹{round(pnl,2)}")
+                    send_telegram(f"⚖️ EXIT {trade['symbol']} | {round(pnl,2)} USDT")
                     active_trades.remove(trade)
 
                 elif price <= tp:
                     pnl = (entry - price) * qty
-                    send_telegram(f"✅ TP HIT {trade['symbol']} | ₹{round(pnl,2)}")
+                    send_telegram(f"✅ TP HIT {trade['symbol']} | {round(pnl,2)} USDT")
                     active_trades.remove(trade)
 
         time.sleep(10)
