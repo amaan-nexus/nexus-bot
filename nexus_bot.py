@@ -1,198 +1,205 @@
 import requests
 import time
+from datetime import datetime
 
-# ================= CONFIG =================
+# ================= SETTINGS =================
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+TIMEFRAME = "1m"
 
-CAPITAL = 300  # USDT
-RISK_PERCENT = 1
-RISK_AMOUNT = CAPITAL * RISK_PERCENT / 100  # 3 USDT
-
-MAX_TRADES = 2
+CAPITAL = 300
+RISK_PER_TRADE = 0.01  # 1% = 3 USDT
+FEE = 0.0004  # 0.04%
 
 TELEGRAM_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
 CHAT_ID = "2046394042"
 
-active_trades = []
+REPORT_INTERVAL = 3600  # 1 hour
+
+# ================= GLOBAL TRACKER =================
+trade_data = {
+    "total": 0,
+    "tp": 0,
+    "sl": 0,
+    "be": 0,
+    "pnl": 0.0
+}
+
+open_trades = {}
+last_report_time = time.time()
 
 # ================= TELEGRAM =================
-def send_telegram(msg):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": msg}
-    )
+def send(msg):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    except:
+        print("Telegram error")
 
-# ================= DATA =================
-def get_klines(symbol):
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&limit=50"
-    data = requests.get(url).json()
-    closes = [float(x[4]) for x in data]
-    return closes
-
+# ================= MARKET DATA =================
 def get_price(symbol):
-    url = f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}"
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
     return float(requests.get(url).json()["price"])
 
-# ================= INDICATORS =================
-def ema(data, period):
-    k = 2 / (period + 1)
-    ema_val = data[0]
-    for price in data:
-        ema_val = price * k + ema_val * (1 - k)
-    return ema_val
-
-def rsi(data, period=14):
-    gains, losses = [], []
-
-    for i in range(1, len(data)):
-        diff = data[i] - data[i-1]
-        if diff > 0:
-            gains.append(diff)
-        else:
-            losses.append(abs(diff))
-
-    avg_gain = sum(gains[-period:]) / period if gains else 0
-    avg_loss = sum(losses[-period:]) / period if losses else 1
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-# ================= SIGNAL =================
-def generate_signal(symbol):
-    closes = get_klines(symbol)
-    price = closes[-1]
-
-    ema_fast = ema(closes[-20:], 20)
-    ema_slow = ema(closes[-50:], 50)
-    rsi_val = rsi(closes)
-
-    if ema_fast > ema_slow and rsi_val > 55:
-        direction = "BUY"
-    elif ema_fast < ema_slow and rsi_val < 45:
-        direction = "SELL"
-    else:
-        return None
-
-    recent_high = max(closes[-10:])
-    recent_low = min(closes[-10:])
-
-    if direction == "BUY":
-        sl = recent_low
-        tp = price + (price - sl) * 2
-    else:
-        sl = recent_high
-        tp = price - (sl - price) * 2
-
-    # ===== SL FILTER =====
-    min_sl_distance = price * 0.001  # 0.1%
-    if abs(price - sl) < min_sl_distance:
-        return None
-
-    return direction, price, sl, tp
-
 # ================= POSITION SIZE =================
-def calculate_quantity(entry, sl):
+def calculate_qty(entry, sl):
+    risk_amount = CAPITAL * RISK_PER_TRADE
     sl_distance = abs(entry - sl)
-    if sl_distance == 0:
-        return None
-    qty = RISK_AMOUNT / sl_distance
-    return qty
 
-# ================= START =================
-send_telegram("🚀 v3.2 BOT STARTED (USDT MODE + BE + FILTER)")
+    qty = risk_amount / sl_distance
+    return round(qty, 4), risk_amount
+
+# ================= TRADE TRACKING =================
+def update_trade(result, pnl):
+    trade_data["total"] += 1
+    trade_data["pnl"] += pnl
+
+    if result == "TP":
+        trade_data["tp"] += 1
+    elif result == "SL":
+        trade_data["sl"] += 1
+    elif result == "BE":
+        trade_data["be"] += 1
+
+    print(f"[TRADE CLOSED] {result} | PnL: {pnl:.2f} | Total: {trade_data['total']}")
+
+# ================= HOURLY REPORT =================
+def send_report():
+    global last_report_time
+
+    if time.time() - last_report_time >= REPORT_INTERVAL:
+        total = trade_data["total"]
+        tp = trade_data["tp"]
+        sl = trade_data["sl"]
+        be = trade_data["be"]
+        pnl = round(trade_data["pnl"], 2)
+
+        winrate = (tp / total * 100) if total > 0 else 0
+
+        msg = f"""📊 PERFORMANCE REPORT
+
+Trades: {total}
+TP: {tp}
+SL: {sl}
+BE: {be}
+
+Win Rate: {winrate:.2f}%
+PnL: {pnl} USDT
+"""
+
+        print("[REPORT SENT]")
+        print(msg)
+
+        send(msg)
+        last_report_time = time.time()
+
+# ================= STRATEGY =================
+def generate_signal(symbol):
+    price = get_price(symbol)
+
+    # Simple momentum logic (replace later with SMC)
+    if int(price) % 2 == 0:
+        return "BUY"
+    else:
+        return "SELL"
+
+# ================= EXECUTE TRADE =================
+def open_trade(symbol):
+    if symbol in open_trades:
+        return
+
+    signal = generate_signal(symbol)
+    entry = get_price(symbol)
+
+    if signal == "BUY":
+        sl = entry * 0.998
+        tp = entry * 1.004
+    else:
+        sl = entry * 1.002
+        tp = entry * 0.996
+
+    qty, risk = calculate_qty(entry, sl)
+
+    open_trades[symbol] = {
+        "type": signal,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "qty": qty,
+        "be": False
+    }
+
+    msg = f"""🚀 ENTER {symbol}
+Type: {signal}
+Entry: {entry}
+SL: {sl}
+TP: {tp}
+Qty: {qty}
+Risk: {round(risk,2)} USDT"""
+
+    print(msg)
+    send(msg)
+
+# ================= MANAGE TRADE =================
+def manage_trades():
+    for symbol in list(open_trades.keys()):
+        trade = open_trades[symbol]
+        price = get_price(symbol)
+
+        entry = trade["entry"]
+        sl = trade["sl"]
+        tp = trade["tp"]
+        qty = trade["qty"]
+
+        # BE logic (1:1)
+        if not trade["be"]:
+            if trade["type"] == "BUY" and price >= entry + (entry - sl):
+                trade["sl"] = entry
+                trade["be"] = True
+                send(f"🔒 BE ACTIVATED {symbol}")
+                print(f"{symbol} BE activated")
+
+            elif trade["type"] == "SELL" and price <= entry - (sl - entry):
+                trade["sl"] = entry
+                trade["be"] = True
+                send(f"🔒 BE ACTIVATED {symbol}")
+                print(f"{symbol} BE activated")
+
+        # TP HIT
+        if (trade["type"] == "BUY" and price >= tp) or (trade["type"] == "SELL" and price <= tp):
+            profit = abs(tp - entry) * qty
+            profit -= (entry * qty * FEE * 2)
+
+            send(f"✅ TP HIT {symbol} | {round(profit,2)} USDT")
+            update_trade("TP", profit)
+
+            del open_trades[symbol]
+
+        # SL HIT
+        elif (trade["type"] == "BUY" and price <= trade["sl"]) or (trade["type"] == "SELL" and price >= trade["sl"]):
+            loss = abs(entry - trade["sl"]) * qty
+            loss += (entry * qty * FEE * 2)
+
+            result = "BE" if trade["be"] else "SL"
+            pnl = 0 if trade["be"] else -loss
+
+            send(f"❌ {result} {symbol} | {round(pnl,2)} USDT")
+            update_trade(result, pnl)
+
+            del open_trades[symbol]
+
+# ================= MAIN LOOP =================
+print("🚀 BOT STARTED (v3.3 FINAL USDT MODE)")
 
 while True:
     try:
-        # ===== ENTRY =====
         for symbol in SYMBOLS:
+            open_trade(symbol)
 
-            if len(active_trades) >= MAX_TRADES:
-                continue
+        manage_trades()
+        send_report()
 
-            signal = generate_signal(symbol)
-            if signal is None:
-                continue
-
-            direction, entry, sl, tp = signal
-
-            qty = calculate_quantity(entry, sl)
-            if qty is None:
-                continue
-
-            trade = {
-                "symbol": symbol,
-                "entry": entry,
-                "sl": sl,
-                "tp": tp,
-                "qty": qty,
-                "dir": direction,
-                "be_done": False
-            }
-
-            active_trades.append(trade)
-
-            send_telegram(f"""
-🚀 ENTER {symbol}
-Type: {direction}
-Entry: {round(entry,2)}
-SL: {round(sl,2)}
-TP: {round(tp,2)}
-Qty: {round(qty,4)}
-Risk: {RISK_AMOUNT} USDT
-""")
-
-        # ===== TRACK =====
-        for trade in active_trades[:]:
-            price = get_price(trade["symbol"])
-
-            entry = trade["entry"]
-            sl = trade["sl"]
-            tp = trade["tp"]
-            qty = trade["qty"]
-
-            # ===== 1:1 LEVEL =====
-            if trade["dir"] == "BUY":
-                one_to_one = entry + (entry - sl)
-            else:
-                one_to_one = entry - (sl - entry)
-
-            # ===== BREAK EVEN =====
-            if not trade["be_done"]:
-                if (trade["dir"] == "BUY" and price >= one_to_one) or \
-                   (trade["dir"] == "SELL" and price <= one_to_one):
-
-                    trade["sl"] = entry
-                    trade["be_done"] = True
-
-                    send_telegram(f"🔒 BE ACTIVATED {trade['symbol']}")
-
-            # ===== EXIT =====
-            if trade["dir"] == "BUY":
-
-                if price <= trade["sl"]:
-                    pnl = (price - entry) * qty
-                    send_telegram(f"⚖️ EXIT {trade['symbol']} | {round(pnl,2)} USDT")
-                    active_trades.remove(trade)
-
-                elif price >= tp:
-                    pnl = (price - entry) * qty
-                    send_telegram(f"✅ TP HIT {trade['symbol']} | {round(pnl,2)} USDT")
-                    active_trades.remove(trade)
-
-            else:
-
-                if price >= trade["sl"]:
-                    pnl = (entry - price) * qty
-                    send_telegram(f"⚖️ EXIT {trade['symbol']} | {round(pnl,2)} USDT")
-                    active_trades.remove(trade)
-
-                elif price <= tp:
-                    pnl = (entry - price) * qty
-                    send_telegram(f"✅ TP HIT {trade['symbol']} | {round(pnl,2)} USDT")
-                    active_trades.remove(trade)
-
-        time.sleep(10)
+        time.sleep(20)
 
     except Exception as e:
-        print("ERROR:", e)
+        print(f"[ERROR] {e}")
         time.sleep(5)
