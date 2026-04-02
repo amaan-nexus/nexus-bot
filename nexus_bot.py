@@ -1,179 +1,223 @@
 import requests
 import pandas as pd
 import time
-import threading
+from telegram import Bot
 
 # ================= CONFIG =================
-TELEGRAM_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
+TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
 CHAT_ID = "2046394042"
 
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-INTERVAL = "1m"
+INTERVAL = "5m"
 
-RISK_PER_TRADE = 3  # USDT
-RR = 2
+CAPITAL = 300
+RISK_PER_TRADE = 0.01  # 1% = 3 USDT
 
-# ================= STATS =================
+bot = Bot(token=TOKEN)
+
+# ===== TRACKING =====
 total_trades = 0
 tp_count = 0
 sl_count = 0
 be_count = 0
-pnl = 0
+total_pnl = 0
 
 open_trades = {}
 
-# ================= TELEGRAM =================
-def send(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+# ==========================================
 
-# ================= DATA =================
+def send(msg):
+    print(msg)
+    bot.send_message(chat_id=CHAT_ID, text=msg)
+
+# ==========================================
+
 def get_data(symbol):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={INTERVAL}&limit=100"
     data = requests.get(url).json()
-    df = pd.DataFrame(data)
-    df = df.astype(float)
-    df.columns = ["time","open","high","low","close","volume",
-                  "ct","qv","n","tb","tq","ignore"]
+
+    df = pd.DataFrame(data, columns=[
+        "time","open","high","low","close","vol",
+        "_","_","_","_","_","_"
+    ])
+
+    df["close"] = df["close"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+
     return df
 
-# ================= STRATEGY =================
-def check_trade(symbol):
+# ==========================================
+
+def add_indicators(df):
+    df["ema"] = df["close"].ewm(span=50).mean()
+
+    df["tr"] = df["high"] - df["low"]
+    df["atr"] = df["tr"].rolling(14).mean()
+
+    return df
+
+# ==========================================
+
+def check_entry(symbol):
     df = get_data(symbol)
+    df = add_indicators(df)
 
-    df["ema20"] = df["close"].ewm(span=20).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
+    price = df["close"].iloc[-1]
+    ema = df["ema"].iloc[-1]
+    atr = df["atr"].iloc[-1]
 
-    last = df.iloc[-1]
-
-    # TREND FILTER
-    if last["ema20"] > last["ema50"]:
-        trend = "BUY"
-    elif last["ema20"] < last["ema50"]:
-        trend = "SELL"
-    else:
+    # === VOLATILITY FILTER ===
+    if atr < price * 0.001:
         return None
 
-    # BASIC ENTRY LOGIC
-    price = last["close"]
+    # === TREND FILTER ===
+    if price > ema:
+        return "BUY"
+    elif price < ema:
+        return "SELL"
 
-    sl = price * (0.998 if trend == "BUY" else 1.002)
-    tp = price + (price - sl) * RR if trend == "BUY" else price - (sl - price) * RR
+    return None
 
-    risk = abs(price - sl)
-    qty = RISK_PER_TRADE / risk
+# ==========================================
 
-    return {
-        "symbol": symbol,
-        "type": trend,
-        "entry": price,
+def calculate_trade(symbol, side):
+    df = get_data(symbol)
+    price = df["close"].iloc[-1]
+
+    if side == "BUY":
+        sl = price * 0.997
+        tp = price * 1.006
+    else:
+        sl = price * 1.003
+        tp = price * 0.994
+
+    risk_amount = CAPITAL * RISK_PER_TRADE
+    qty = risk_amount / abs(price - sl)
+
+    return round(price,2), round(sl,2), round(tp,2), round(qty,4), round(risk_amount,2)
+
+# ==========================================
+
+def open_trade(symbol, side):
+    global total_trades
+
+    entry, sl, tp, qty, risk = calculate_trade(symbol, side)
+
+    open_trades[symbol] = {
+        "side": side,
+        "entry": entry,
         "sl": sl,
         "tp": tp,
         "qty": qty,
-        "risk": RISK_PER_TRADE,
         "be": False
     }
 
-# ================= TRADE MANAGEMENT =================
+    total_trades += 1
+
+    send(f"""🚀 ENTER {symbol}
+Type: {side}
+Entry: {entry}
+SL: {sl}
+TP: {tp}
+Qty: {qty}
+Risk: {risk} USDT""")
+
+# ==========================================
+
 def manage_trades():
-    global pnl, tp_count, sl_count, be_count, total_trades
+    global tp_count, sl_count, be_count, total_pnl
 
-    while True:
-        for symbol, trade in list(open_trades.items()):
-            df = get_data(symbol)
-            price = df.iloc[-1]["close"]
+    for symbol in list(open_trades.keys()):
+        trade = open_trades[symbol]
+        df = get_data(symbol)
+        price = df["close"].iloc[-1]
 
-            entry = trade["entry"]
-            sl = trade["sl"]
-            tp = trade["tp"]
+        entry = trade["entry"]
+        sl = trade["sl"]
+        tp = trade["tp"]
+        side = trade["side"]
 
-            # BE activation (1:1)
-            if not trade["be"]:
-                if trade["type"] == "BUY" and price >= entry + (entry - sl):
-                    trade["sl"] = entry
-                    trade["be"] = True
-                    send(f"🔒 BE ACTIVATED {symbol}")
+        # === BE LOGIC ===
+        if not trade["be"]:
+            if (side == "BUY" and price >= entry + (tp-entry)/2) or \
+               (side == "SELL" and price <= entry - (entry-tp)/2):
 
-                elif trade["type"] == "SELL" and price <= entry - (sl - entry):
-                    trade["sl"] = entry
-                    trade["be"] = True
-                    send(f"🔒 BE ACTIVATED {symbol}")
+                trade["sl"] = entry
+                trade["be"] = True
+                send(f"🔒 BE ACTIVATED {symbol}")
 
-            # TP HIT
-            if (trade["type"] == "BUY" and price >= tp) or \
-               (trade["type"] == "SELL" and price <= tp):
+        # === EXIT CONDITIONS ===
+        if side == "BUY":
+            if price <= trade["sl"]:
+                pnl = 0 if trade["be"] else -3
+                be_count += 1 if trade["be"] else 0
+                sl_count += 0 if trade["be"] else 1
+                total_pnl += pnl
+                send(f"❌ EXIT {symbol} | {pnl} USDT")
+                del open_trades[symbol]
 
-                profit = RISK_PER_TRADE * RR
-                pnl += profit
+            elif price >= tp:
+                pnl = 6
                 tp_count += 1
-                total_trades += 1
-
-                send(f"✅ TP HIT {symbol} | {profit} USDT")
+                total_pnl += pnl
+                send(f"✅ TP HIT {symbol} | {pnl} USDT")
                 del open_trades[symbol]
 
-            # SL HIT
-            elif (trade["type"] == "BUY" and price <= trade["sl"]) or \
-                 (trade["type"] == "SELL" and price >= trade["sl"]):
-
-                if trade["be"]:
-                    be_count += 1
-                    send(f"❌ BE {symbol} | 0 USDT")
-                else:
-                    loss = -RISK_PER_TRADE
-                    pnl += loss
-                    sl_count += 1
-                    send(f"❌ SL {symbol} | {loss} USDT")
-
-                total_trades += 1
+        else:
+            if price >= trade["sl"]:
+                pnl = 0 if trade["be"] else -3
+                be_count += 1 if trade["be"] else 0
+                sl_count += 0 if trade["be"] else 1
+                total_pnl += pnl
+                send(f"❌ EXIT {symbol} | {pnl} USDT")
                 del open_trades[symbol]
 
-        time.sleep(5)
+            elif price <= tp:
+                pnl = 6
+                tp_count += 1
+                total_pnl += pnl
+                send(f"✅ TP HIT {symbol} | {pnl} USDT")
+                del open_trades[symbol]
 
-# ================= ENTRY LOOP =================
-def run_bot():
-    send("🚀 BOT STARTED (v4 SMART MODE)")
+# ==========================================
 
-    while True:
-        for symbol in SYMBOLS:
-            if symbol not in open_trades:
-                trade = check_trade(symbol)
-                if trade:
-                    open_trades[symbol] = trade
-
-                    send(
-                        f"🚀 ENTER {symbol}\n"
-                        f"Type: {trade['type']}\n"
-                        f"Entry: {round(trade['entry'],2)}\n"
-                        f"SL: {round(trade['sl'],2)}\n"
-                        f"TP: {round(trade['tp'],2)}\n"
-                        f"Qty: {round(trade['qty'],4)}\n"
-                        f"Risk: {trade['risk']} USDT"
-                    )
-
-        time.sleep(30)
-
-# ================= REPORT =================
 def report():
-    while True:
-        time.sleep(3600)
+    win_rate = (tp_count / total_trades * 100) if total_trades > 0 else 0
 
-        if total_trades == 0:
-            continue
+    send(f"""📊 PERFORMANCE REPORT
 
-        win_rate = (tp_count / total_trades) * 100
+Trades: {total_trades}
+TP: {tp_count}
+SL: {sl_count}
+BE: {be_count}
 
-        send(
-            f"📊 PERFORMANCE REPORT\n\n"
-            f"Trades: {total_trades}\n"
-            f"TP: {tp_count}\n"
-            f"SL: {sl_count}\n"
-            f"BE: {be_count}\n\n"
-            f"Win Rate: {round(win_rate,2)}%\n"
-            f"PnL: {round(pnl,2)} USDT"
-        )
+Win Rate: {round(win_rate,2)}%
+PnL: {round(total_pnl,2)} USDT
+""")
 
-# ================= START =================
-threading.Thread(target=manage_trades).start()
-threading.Thread(target=report).start()
+# ==========================================
 
-run_bot()
+send("🚀 v4 BOT STARTED (SMART FILTER)")
+
+last_report = time.time()
+
+while True:
+    try:
+        for sym in SYMBOLS:
+            if sym not in open_trades:
+                signal = check_entry(sym)
+                if signal:
+                    open_trade(sym, signal)
+
+        manage_trades()
+
+        if time.time() - last_report > 3600:
+            report()
+            last_report = time.time()
+
+        time.sleep(10)
+
+    except Exception as e:
+        print("Error:", e)
+        time.sleep(5)
