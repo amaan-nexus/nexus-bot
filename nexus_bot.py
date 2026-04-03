@@ -81,7 +81,6 @@ while True:
             symbol = trade["symbol"]
             price = get_price(symbol)
 
-            global wins, losses, breakevens, total_pnl
 
             # TP HIT
             if (trade["type"] == "BUY" and price >= trade["tp"]) or \
