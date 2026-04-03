@@ -21,6 +21,10 @@ def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
+# ================= GLOBAL STATE =================
+last_trade_time = {}
+active_symbols = set()
+
 # ================= DATA =================
 def get_data(symbol):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
@@ -51,6 +55,13 @@ def generate_signal(df):
 
 # ================= TRADE BUILDER =================
 def build_trade(symbol):
+    global last_trade_time
+
+    # ⛔ Cooldown (5 min)
+    if symbol in last_trade_time:
+        if time.time() - last_trade_time[symbol] < 300:
+            return None
+
     df = get_data(symbol)
     signal = generate_signal(df)
 
@@ -60,34 +71,38 @@ def build_trade(symbol):
     bid, ask = get_price(symbol)
     entry = ask if signal == "BUY" else bid
 
-    # SL & TP basic
-    sl = df["low"].iloc[-2] if signal == "BUY" else df["high"].iloc[-2]
+    # ================= ATR SL =================
+    df["tr"] = df["high"] - df["low"]
+    atr = df["tr"].rolling(14).mean().iloc[-1]
+
+    if atr == 0 or pd.isna(atr):
+        return None
+
+    if signal == "BUY":
+        sl = entry - (atr * 1.5)
+        tp = entry + (atr * 3)
+    else:
+        sl = entry + (atr * 1.5)
+        tp = entry - (atr * 3)
+
     risk = abs(entry - sl)
 
-    if risk == 0:
+    # ❌ STRONG MIN SL FILTER
+    if risk < entry * 0.003:
         return None
-
-    # ❌ MIN SL FILTER
-    if risk < entry * 0.0015:
-        return None
-
-    # ✅ SL BUFFER
-    if signal == "BUY":
-        sl = sl * 0.998
-        tp = entry + (entry - sl) * 2
-    else:
-        sl = sl * 1.002
-        tp = entry - (sl - entry) * 2
 
     # ❌ SPREAD FILTER
     spread = abs(ask - bid)
     if spread > entry * 0.0005:
         return None
 
-    qty = RISK_PER_TRADE / abs(entry - sl)
+    qty = RISK_PER_TRADE / risk
 
-    # SCORE (ranking logic)
-    score = abs(tp - entry) / abs(entry - sl)
+    # SCORE (ranking)
+    score = abs(tp - entry) / risk
+
+    # Save cooldown time
+    last_trade_time[symbol] = time.time()
 
     return {
         "symbol": symbol,
@@ -100,22 +115,29 @@ def build_trade(symbol):
     }
 
 # ================= MAIN LOOP =================
-log("🚀 v6.1 SNIPER BOT STARTED")
+log("🚀 v6.2 PRO SNIPER BOT STARTED")
 
 while True:
     try:
         trades = []
+        active_symbols.clear()
 
         for symbol in SYMBOLS:
             trade = build_trade(symbol)
             if trade:
                 trades.append(trade)
 
-        # 🔥 TRADE RANKING (best trades only)
+        # 🔥 Rank best trades
         trades = sorted(trades, key=lambda x: x["score"], reverse=True)
         trades = trades[:MAX_TRADES]
 
         for t in trades:
+            # ❌ Prevent duplicate
+            if t["symbol"] in active_symbols:
+                continue
+
+            active_symbols.add(t["symbol"])
+
             msg = f"""
 🚀 ENTER {t['symbol']}
 Type: {t['type']}
@@ -125,6 +147,7 @@ TP: {round(t['tp'],2)}
 Qty: {round(t['qty'],4)}
 Risk: {RISK_PER_TRADE} USDT
 """
+
             log(msg)
             send_telegram(msg)
 
