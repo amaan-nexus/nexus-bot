@@ -144,6 +144,10 @@ while True:
             if (sl_distance / price) < 0.003:
                 continue
 
+            # Skip if TP too small
+            if (tp_distance / price) < 0.004:
+                 continue
+
             score = score_trade(df)
 
             candidates.append({
