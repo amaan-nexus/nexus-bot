@@ -1,227 +1,135 @@
 import requests
 import pandas as pd
 import time
+import sys
 
-# ===== CONFIG =====
+# ================= CONFIG =================
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
+RISK_PER_TRADE = 3
+MAX_TRADES = 2
+TIMEFRAME = "5m"
+
 TELEGRAM_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
 CHAT_ID = "2046394042"
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
-TIMEFRAME = "5m"
+# ================= LOGGER =================
+def log(msg):
+    print(msg)
+    sys.stdout.flush()
 
-RISK_PER_TRADE = 3
-RR = 2
-MAX_ACTIVE_TRADES = 2
-
-# ===== STATS =====
-total_trades = 0
-tp_count = 0
-sl_count = 0
-be_count = 0
-total_pnl = 0
-
-open_trades = []
-
-# ===== TELEGRAM =====
-def send(msg):
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-# ===== DATA =====
+# ================= DATA =================
 def get_data(symbol):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
     data = requests.get(url).json()
     df = pd.DataFrame(data)
-    df = df.iloc[:, :6]
+    df = df[[0,1,2,3,4,5]]
     df.columns = ["time","open","high","low","close","volume"]
     df = df.astype(float)
     return df
 
-# ===== INDICATORS =====
-def add_indicators(df):
-    df["ema50"] = df["close"].ewm(span=50).mean()
-    df["ema200"] = df["close"].ewm(span=200).mean()
-    df["atr"] = (df["high"] - df["low"]).rolling(14).mean()
-    return df
+def get_price(symbol):
+    url = f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={symbol}"
+    data = requests.get(url).json()
+    return float(data["bidPrice"]), float(data["askPrice"])
 
-# ===== SCORING FUNCTION =====
-def calculate_score(df):
+# ================= STRATEGY =================
+def generate_signal(df):
+    df["ema"] = df["close"].ewm(span=20).mean()
+
     last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-    trend_strength = abs(last["ema50"] - last["ema200"])
-    volatility = last["atr"]
-    candle_strength = abs(last["close"] - last["open"])
+    if last["close"] > last["ema"] and prev["close"] < prev["ema"]:
+        return "BUY"
+    elif last["close"] < last["ema"] and prev["close"] > prev["ema"]:
+        return "SELL"
+    return None
 
-    score = (trend_strength * 0.4) + (volatility * 0.3) + (candle_strength * 0.3)
-    return score
+# ================= TRADE BUILDER =================
+def build_trade(symbol):
+    df = get_data(symbol)
+    signal = generate_signal(df)
 
-# ===== SIGNAL =====
-def get_signal(df):
-    last = df.iloc[-1]
+    if not signal:
+        return None
 
-    if last["ema50"] > last["ema200"]:
-        trend = "BUY"
-    elif last["ema50"] < last["ema200"]:
-        trend = "SELL"
+    bid, ask = get_price(symbol)
+    entry = ask if signal == "BUY" else bid
+
+    # SL & TP basic
+    sl = df["low"].iloc[-2] if signal == "BUY" else df["high"].iloc[-2]
+    risk = abs(entry - sl)
+
+    if risk == 0:
+        return None
+
+    # ❌ MIN SL FILTER
+    if risk < entry * 0.0015:
+        return None
+
+    # ✅ SL BUFFER
+    if signal == "BUY":
+        sl = sl * 0.998
+        tp = entry + (entry - sl) * 2
     else:
+        sl = sl * 1.002
+        tp = entry - (sl - entry) * 2
+
+    # ❌ SPREAD FILTER
+    spread = abs(ask - bid)
+    if spread > entry * 0.0005:
         return None
-
-    if last["atr"] < df["atr"].mean():
-        return None
-
-    if abs(last["close"] - last["open"]) < (last["atr"] * 0.5):
-        return None
-
-    return trend
-
-# ===== EXECUTE =====
-def execute_trade(symbol, side, df):
-    global total_trades
-
-    entry = df.iloc[-1]["close"]
-    atr = df.iloc[-1]["atr"]
-
-    if side == "BUY":
-        sl = entry - atr
-        tp = entry + atr * RR
-    else:
-        sl = entry + atr
-        tp = entry - atr * RR
 
     qty = RISK_PER_TRADE / abs(entry - sl)
 
-    trade = {
+    # SCORE (ranking logic)
+    score = abs(tp - entry) / abs(entry - sl)
+
+    return {
         "symbol": symbol,
-        "side": side,
+        "type": signal,
         "entry": entry,
         "sl": sl,
         "tp": tp,
         "qty": qty,
-        "be": False
+        "score": score
     }
 
-    open_trades.append(trade)
-    total_trades += 1
-
-    send(f"""🚀 ENTER {symbol}
-Type: {side}
-Entry: {entry:.2f}
-SL: {sl:.2f}
-TP: {tp:.2f}
-Qty: {qty:.4f}
-Risk: {RISK_PER_TRADE} USDT""")
-
-# ===== MONITOR =====
-def monitor_trades():
-    global tp_count, sl_count, be_count, total_pnl
-
-    for trade in open_trades[:]:
-        price = float(requests.get(
-            f"https://api.binance.com/api/v3/ticker/price?symbol={trade['symbol']}"
-        ).json()["price"])
-
-        entry = trade["entry"]
-        sl = trade["sl"]
-        risk = abs(entry - sl)
-
-        # BE
-        if not trade["be"]:
-            if trade["side"] == "BUY" and price >= entry + risk:
-                trade["sl"] = entry
-                trade["be"] = True
-                send(f"🔒 BE {trade['symbol']}")
-
-            elif trade["side"] == "SELL" and price <= entry - risk:
-                trade["sl"] = entry
-                trade["be"] = True
-                send(f"🔒 BE {trade['symbol']}")
-
-        # 1.5R lock
-        if trade["be"]:
-            if trade["side"] == "BUY" and price >= entry + (risk * 1.5):
-                trade["sl"] = entry + (risk * 0.5)
-
-            elif trade["side"] == "SELL" and price <= entry - (risk * 1.5):
-                trade["sl"] = entry - (risk * 0.5)
-
-        # TP
-        if (trade["side"] == "BUY" and price >= trade["tp"]) or \
-           (trade["side"] == "SELL" and price <= trade["tp"]):
-            tp_count += 1
-            total_pnl += RISK_PER_TRADE * RR
-            send(f"✅ TP {trade['symbol']} +{RISK_PER_TRADE * RR} USDT")
-            open_trades.remove(trade)
-
-        # SL
-        elif (trade["side"] == "BUY" and price <= trade["sl"]) or \
-             (trade["side"] == "SELL" and price >= trade["sl"]):
-
-            if trade["be"]:
-                be_count += 1
-                send(f"⚖️ BE {trade['symbol']} 0 USDT")
-            else:
-                sl_count += 1
-                total_pnl -= RISK_PER_TRADE
-                send(f"❌ SL {trade['symbol']} -{RISK_PER_TRADE} USDT")
-
-            open_trades.remove(trade)
-
-# ===== REPORT =====
-def report():
-    if total_trades == 0:
-        return
-
-    win_rate = (tp_count / total_trades) * 100
-
-    send(f"""📊 REPORT
-
-Trades: {total_trades}
-TP: {tp_count}
-SL: {sl_count}
-BE: {be_count}
-
-Win Rate: {win_rate:.2f}%
-PnL: {total_pnl:.2f} USDT""")
-
-# ===== MAIN =====
-send("🚀 v6 SNIPER BOT STARTED")
-
-last_report = time.time()
+# ================= MAIN LOOP =================
+log("🚀 v6.1 SNIPER BOT STARTED")
 
 while True:
     try:
-        candidates = []
+        trades = []
 
-        # ===== SCAN ALL PAIRS =====
         for symbol in SYMBOLS:
-            if any(t["symbol"] == symbol for t in open_trades):
-                continue
+            trade = build_trade(symbol)
+            if trade:
+                trades.append(trade)
 
-            df = get_data(symbol)
-            df = add_indicators(df)
+        # 🔥 TRADE RANKING (best trades only)
+        trades = sorted(trades, key=lambda x: x["score"], reverse=True)
+        trades = trades[:MAX_TRADES]
 
-            signal = get_signal(df)
+        for t in trades:
+            msg = f"""
+🚀 ENTER {t['symbol']}
+Type: {t['type']}
+Entry: {round(t['entry'],2)}
+SL: {round(t['sl'],2)}
+TP: {round(t['tp'],2)}
+Qty: {round(t['qty'],4)}
+Risk: {RISK_PER_TRADE} USDT
+"""
+            log(msg)
+            send_telegram(msg)
 
-            if signal:
-                score = calculate_score(df)
-                candidates.append((symbol, signal, df, score))
-
-        # ===== SORT BY BEST SCORE =====
-        candidates.sort(key=lambda x: x[3], reverse=True)
-
-        # ===== TAKE BEST 2 =====
-        for symbol, signal, df, score in candidates[:MAX_ACTIVE_TRADES - len(open_trades)]:
-            execute_trade(symbol, signal, df)
-
-        monitor_trades()
-
-        # REPORT
-        if time.time() - last_report > 3600:
-            report()
-            last_report = time.time()
-
-        time.sleep(15)
+        time.sleep(60)
 
     except Exception as e:
-        send(f"⚠️ ERROR: {e}")
-        time.sleep(5)
+        log(f"ERROR: {e}")
+        time.sleep(10)
