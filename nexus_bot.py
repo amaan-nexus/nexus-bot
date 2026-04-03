@@ -85,7 +85,7 @@ while True:
             atr = calculate_atr(df)
             price = get_price(symbol)
 
-            sl_distance = atr * 1.5
+            sl_distance = atr * 2.2
             tp_distance = atr * 3
 
             # ❌ Skip bad trades (too small SL)
