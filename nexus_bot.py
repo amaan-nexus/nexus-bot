@@ -21,6 +21,8 @@ last_report_time = time.time()
 
 # ================= TELEGRAM =================
 def send_telegram(msg):
+    print(msg)  # 👈 ADD THIS LINE (IMPORTANT)
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
