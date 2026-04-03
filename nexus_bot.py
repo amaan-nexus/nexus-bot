@@ -13,20 +13,18 @@ RISK_PER_TRADE = 3
 RR = 2
 MAX_TRADES = 2
 
-# ============================================
-
+# ================= STATE =================
 active_trades = []
+last_report_time = time.time()
 
 wins = 0
 losses = 0
 breakevens = 0
 total_pnl = 0
 
-last_report_time = time.time()
-
 # ================= TELEGRAM =================
 def send_telegram(msg):
-    print(msg)  # show logs
+    print(msg)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
@@ -42,7 +40,7 @@ def get_klines(symbol):
 
 def get_price(symbol):
     url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    return float(requests.get(url).json()['price'])
+    return float(requests.get(url).json()["price"])
 
 # ================= INDICATORS =================
 def calculate_atr(df):
@@ -53,7 +51,7 @@ def calculate_atr(df):
     df["ATR"] = df["TR"].rolling(14).mean()
     return df["ATR"].iloc[-1]
 
-# ================= SIGNAL =================
+# ================= STRATEGY =================
 def generate_signal(df):
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
@@ -66,7 +64,6 @@ def generate_signal(df):
         return "SELL"
     return None
 
-# ================= SCORING =================
 def score_trade(df):
     momentum = abs(df["close"].iloc[-1] - df["close"].iloc[-5])
     volume = df["volume"].iloc[-1]
@@ -78,9 +75,13 @@ send_telegram("🚀 v6.4 PRO SNIPER BOT STARTED")
 # ================= MAIN LOOP =================
 while True:
     try:
+
         # ===== MANAGE ACTIVE TRADES =====
         for trade in active_trades[:]:
-            price = get_price(trade["symbol"])
+            symbol = trade["symbol"]
+            price = get_price(symbol)
+
+            global wins, losses, breakevens, total_pnl
 
             # TP HIT
             if (trade["type"] == "BUY" and price >= trade["tp"]) or \
@@ -90,26 +91,26 @@ while True:
                 total_pnl += pnl
                 wins += 1
 
-                send_telegram(f"✅ TP HIT {trade['symbol']} | +{pnl} USDT")
+                send_telegram(f"✅ TP HIT {symbol} | +{pnl} USDT")
                 active_trades.remove(trade)
 
             # SL HIT
             elif (trade["type"] == "BUY" and price <= trade["sl"]) or \
                  (trade["type"] == "SELL" and price >= trade["sl"]):
 
-                if trade["be"]:
+                if trade.get("be", False):
                     breakevens += 1
-                    send_telegram(f"⚖️ BE {trade['symbol']} | 0 USDT")
+                    send_telegram(f"🔒 BE {symbol} | 0 USDT")
                 else:
                     pnl = -trade["risk"]
                     total_pnl += pnl
                     losses += 1
-                    send_telegram(f"❌ SL HIT {trade['symbol']} | {pnl} USDT")
+                    send_telegram(f"❌ SL HIT {symbol} | {pnl} USDT")
 
                 active_trades.remove(trade)
 
-            # BE ACTIVATION (1R)
-            elif not trade["be"]:
+            # BE ACTIVATION
+            elif not trade.get("be", False):
                 risk_move = abs(trade["entry"] - trade["sl"])
 
                 if (trade["type"] == "BUY" and price >= trade["entry"] + risk_move) or \
@@ -117,14 +118,13 @@ while True:
 
                     trade["sl"] = trade["entry"]
                     trade["be"] = True
-                    send_telegram(f"🔒 BE ACTIVATED {trade['symbol']}")
+                    send_telegram(f"🔒 BE ACTIVATED {symbol}")
 
         # ===== FIND NEW TRADES =====
         candidates = []
 
         for symbol in PAIRS:
 
-            # Prevent duplicate trades
             if any(t["symbol"] == symbol for t in active_trades):
                 continue
 
@@ -140,13 +140,9 @@ while True:
             sl_distance = atr * 2.2
             tp_distance = atr * 3
 
-            # Skip weak trades
+            # ❌ Skip bad trades
             if (sl_distance / price) < 0.003:
                 continue
-
-            # Skip if TP too small
-            if (tp_distance / price) < 0.004:
-                 continue
 
             score = score_trade(df)
 
@@ -159,7 +155,7 @@ while True:
                 "score": score
             })
 
-        # Sort best trades
+        # ===== SELECT BEST =====
         candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
 
         for trade in candidates[:MAX_TRADES]:
@@ -173,6 +169,10 @@ while True:
             else:
                 sl = entry + trade["sl_dist"]
                 tp = entry - trade["tp_dist"]
+
+            # ❌ XRP FIX (zero SL bug)
+            if abs(entry - sl) < 0.001:
+                continue
 
             qty = RISK_PER_TRADE / abs(entry - sl)
 
@@ -192,14 +192,14 @@ while True:
             send_telegram(
                 f"🚀 ENTER {symbol}\n"
                 f"Type: {signal}\n"
-                f"Entry: {entry:.2f}\n"
-                f"SL: {sl:.2f}\n"
-                f"TP: {tp:.2f}\n"
-                f"Qty: {qty:.4f}\n"
+                f"Entry: {round(entry,2)}\n"
+                f"SL: {round(sl,2)}\n"
+                f"TP: {round(tp,2)}\n"
+                f"Qty: {round(qty,4)}\n"
                 f"Risk: {RISK_PER_TRADE} USDT"
             )
 
-        # ===== PERFORMANCE REPORT =====
+        # ===== PERFORMANCE REPORT (1 HR) =====
         if time.time() - last_report_time > 3600:
             total_trades = wins + losses + breakevens
             win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
@@ -210,14 +210,14 @@ while True:
                 f"Wins: {wins}\n"
                 f"Losses: {losses}\n"
                 f"BE: {breakevens}\n\n"
-                f"Win Rate: {win_rate:.2f}%\n"
-                f"PnL: {total_pnl:.2f} USDT"
+                f"Win Rate: {round(win_rate,2)}%\n"
+                f"PnL: {round(total_pnl,2)} USDT"
             )
 
             last_report_time = time.time()
 
-        time.sleep(10)
+        time.sleep(30)
 
     except Exception as e:
-        print("ERROR:", e)
+        print("Error:", e)
         time.sleep(10)
