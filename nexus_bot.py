@@ -6,21 +6,22 @@ import time
 BOT_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
 CHAT_ID = "2046394042"
 
-PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
+PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 TIMEFRAME = "5m"
 
 RISK_PER_TRADE = 3
 RR = 2
 MAX_TRADES = 2
 
-# ================= STATE =================
+# ================= GLOBAL STATS =================
 active_trades = []
-last_report_time = time.time()
 
 wins = 0
 losses = 0
 breakevens = 0
 total_pnl = 0
+
+last_report_time = time.time()
 
 # ================= TELEGRAM =================
 def send_telegram(msg):
@@ -34,7 +35,7 @@ def get_klines(symbol):
     data = requests.get(url).json()
     df = pd.DataFrame(data)
     df = df.iloc[:, :6]
-    df.columns = ["time","open","high","low","close","volume"]
+    df.columns = ["time", "open", "high", "low", "close", "volume"]
     df = df.astype(float)
     return df
 
@@ -47,11 +48,11 @@ def calculate_atr(df):
     df["H-L"] = df["high"] - df["low"]
     df["H-C"] = abs(df["high"] - df["close"].shift())
     df["L-C"] = abs(df["low"] - df["close"].shift())
-    df["TR"] = df[["H-L","H-C","L-C"]].max(axis=1)
+    df["TR"] = df[["H-L", "H-C", "L-C"]].max(axis=1)
     df["ATR"] = df["TR"].rolling(14).mean()
     return df["ATR"].iloc[-1]
 
-# ================= STRATEGY =================
+# ================= SIGNAL =================
 def generate_signal(df):
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
@@ -64,144 +65,97 @@ def generate_signal(df):
         return "SELL"
     return None
 
-def score_trade(df):
-    momentum = abs(df["close"].iloc[-1] - df["close"].iloc[-5])
-    volume = df["volume"].iloc[-1]
-    return momentum * volume
-
 # ================= START =================
-send_telegram("🚀 v6.4 PRO SNIPER BOT STARTED")
+send_telegram("🚀 v6.5 PRO SNIPER BOT STARTED")
 
 # ================= MAIN LOOP =================
 while True:
     try:
 
-        # ===== MANAGE ACTIVE TRADES =====
+        # ================= CHECK ACTIVE TRADES =================
         for trade in active_trades[:]:
-            symbol = trade["symbol"]
-            price = get_price(symbol)
-
+            price = get_price(trade["symbol"])
 
             # TP HIT
             if (trade["type"] == "BUY" and price >= trade["tp"]) or \
                (trade["type"] == "SELL" and price <= trade["tp"]):
 
                 pnl = trade["risk"] * RR
-                total_pnl += pnl
                 wins += 1
+                total_pnl += pnl
 
-                send_telegram(f"✅ TP HIT {symbol} | +{pnl} USDT")
+                send_telegram(f"✅ TP HIT {trade['symbol']} | +{pnl} USDT")
                 active_trades.remove(trade)
 
             # SL HIT
             elif (trade["type"] == "BUY" and price <= trade["sl"]) or \
                  (trade["type"] == "SELL" and price >= trade["sl"]):
 
-                if trade.get("be", False):
-                    breakevens += 1
-                    send_telegram(f"🔒 BE {symbol} | 0 USDT")
-                else:
-                    pnl = -trade["risk"]
-                    total_pnl += pnl
-                    losses += 1
-                    send_telegram(f"❌ SL HIT {symbol} | {pnl} USDT")
+                pnl = -trade["risk"]
+                losses += 1
+                total_pnl += pnl
 
+                send_telegram(f"❌ SL HIT {trade['symbol']} | {pnl} USDT")
                 active_trades.remove(trade)
 
-            # BE ACTIVATION
-            elif not trade.get("be", False):
-                risk_move = abs(trade["entry"] - trade["sl"])
+        # ================= NEW TRADES =================
+        if len(active_trades) < MAX_TRADES:
 
-                if (trade["type"] == "BUY" and price >= trade["entry"] + risk_move) or \
-                   (trade["type"] == "SELL" and price <= trade["entry"] - risk_move):
+            for symbol in PAIRS:
 
-                    trade["sl"] = trade["entry"]
-                    trade["be"] = True
-                    send_telegram(f"🔒 BE ACTIVATED {symbol}")
+                # avoid duplicate trade
+                if any(t["symbol"] == symbol for t in active_trades):
+                    continue
 
-        # ===== FIND NEW TRADES =====
-        candidates = []
+                df = get_klines(symbol)
+                signal = generate_signal(df)
 
-        for symbol in PAIRS:
+                if not signal:
+                    continue
 
-            if any(t["symbol"] == symbol for t in active_trades):
-                continue
+                atr = calculate_atr(df)
+                price = get_price(symbol)
 
-            df = get_klines(symbol)
-            signal = generate_signal(df)
+                sl_dist = atr * 2
+                tp_dist = atr * RR
 
-            if not signal:
-                continue
+                if signal == "BUY":
+                    sl = price - sl_dist
+                    tp = price + tp_dist
+                else:
+                    sl = price + sl_dist
+                    tp = price - tp_dist
 
-            atr = calculate_atr(df)
-            price = get_price(symbol)
+                qty = RISK_PER_TRADE / abs(price - sl)
 
-            sl_distance = atr * 2.2
-            tp_distance = atr * 3
+                trade = {
+                    "symbol": symbol,
+                    "type": signal,
+                    "entry": price,
+                    "sl": sl,
+                    "tp": tp,
+                    "qty": qty,
+                    "risk": RISK_PER_TRADE
+                }
 
-            # ❌ Skip bad trades
-            if (sl_distance / price) < 0.003:
-                continue
+                active_trades.append(trade)
 
-            score = score_trade(df)
+                send_telegram(
+                    f"🚀 ENTER {symbol}\n"
+                    f"Type: {signal}\n"
+                    f"Entry: {round(price,4)}\n"
+                    f"SL: {round(sl,4)}\n"
+                    f"TP: {round(tp,4)}\n"
+                    f"Qty: {round(qty,4)}\n"
+                    f"Risk: {RISK_PER_TRADE} USDT"
+                )
 
-            candidates.append({
-                "symbol": symbol,
-                "signal": signal,
-                "price": price,
-                "sl_dist": sl_distance,
-                "tp_dist": tp_distance,
-                "score": score
-            })
+                break  # only 1 trade per cycle
 
-        # ===== SELECT BEST =====
-        candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
-
-        for trade in candidates[:MAX_TRADES]:
-            symbol = trade["symbol"]
-            signal = trade["signal"]
-            entry = trade["price"]
-
-            if signal == "BUY":
-                sl = entry - trade["sl_dist"]
-                tp = entry + trade["tp_dist"]
-            else:
-                sl = entry + trade["sl_dist"]
-                tp = entry - trade["tp_dist"]
-
-            # ❌ XRP FIX (zero SL bug)
-            if abs(entry - sl) < 0.001:
-                continue
-
-            qty = RISK_PER_TRADE / abs(entry - sl)
-
-            new_trade = {
-                "symbol": symbol,
-                "type": signal,
-                "entry": entry,
-                "sl": sl,
-                "tp": tp,
-                "qty": qty,
-                "risk": RISK_PER_TRADE,
-                "be": False
-            }
-
-            active_trades.append(new_trade)
-
-            send_telegram(
-                f"🚀 ENTER {symbol}\n"
-                f"Type: {signal}\n"
-                f"Entry: {round(entry,2)}\n"
-                f"SL: {round(sl,2)}\n"
-                f"TP: {round(tp,2)}\n"
-                f"Qty: {round(qty,4)}\n"
-                f"Risk: {RISK_PER_TRADE} USDT"
-            )
-
-        # ===== PERFORMANCE REPORT (1 HR) =====
-        if time.time() - last_report_time > 3600:
+        # ================= PERFORMANCE REPORT =================
+        if time.time() - last_report_time >= 3600:
             total_trades = wins + losses + breakevens
-            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+            winrate = (wins / total_trades * 100) if total_trades > 0 else 0
 
             send_telegram(
                 f"📊 PERFORMANCE REPORT\n\n"
@@ -209,14 +163,14 @@ while True:
                 f"Wins: {wins}\n"
                 f"Losses: {losses}\n"
                 f"BE: {breakevens}\n\n"
-                f"Win Rate: {round(win_rate,2)}%\n"
+                f"Win Rate: {round(winrate,2)}%\n"
                 f"PnL: {round(total_pnl,2)} USDT"
             )
 
             last_report_time = time.time()
 
-        time.sleep(30)
+        time.sleep(10)
 
     except Exception as e:
-        print("Error:", e)
-        time.sleep(10)
+        print("ERROR:", e)
+        time.sleep(5)
