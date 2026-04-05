@@ -13,10 +13,11 @@ RISK_PER_TRADE = 3
 RR = 2
 MAX_TRADES = 2
 
-SPREAD = 0.0005
-FEE = 0.0004
+# Fees & Spread (adjust if needed)
+FEE_PERCENT = 0.0004   # 0.04%
+SPREAD_BUFFER = 0.0003 # 0.03%
 
-# ================= GLOBAL STATS =================
+# ================= GLOBAL =================
 active_trades = []
 
 wins = 0
@@ -75,28 +76,34 @@ send_telegram("🚀 v6.6 PRO SNIPER BOT STARTED")
 while True:
     try:
 
-        # ================= CHECK ACTIVE TRADES =================
+        # ================= CHECK ACTIVE =================
         for trade in active_trades[:]:
             price = get_price(trade["symbol"])
+            move = abs(trade["entry"] - trade["sl_initial"])
 
-            move = abs(price - trade["entry"])
-            risk_val = abs(trade["entry"] - trade["sl_initial"])
+            # ===== BE LEVEL 1 (SAFE) =====
+            if not trade.get("be1", False):
+                if trade["type"] == "BUY" and price >= trade["entry"] + move:
+                    trade["sl"] = trade["entry"] * (1 + FEE_PERCENT)
+                    trade["be1"] = True
+                    send_telegram(f"🟡 BE1 Activated {trade['symbol']}")
 
-            # ===== BREAKEVEN =====
-            if not trade["be"] and move >= risk_val:
-                trade["sl"] = trade["entry"]
-                trade["be"] = True
-                breakevens += 1
-                send_telegram(f"🔒 BE Activated {trade['symbol']}")
+                elif trade["type"] == "SELL" and price <= trade["entry"] - move:
+                    trade["sl"] = trade["entry"] * (1 - FEE_PERCENT)
+                    trade["be1"] = True
+                    send_telegram(f"🟡 BE1 Activated {trade['symbol']}")
 
-            elif trade["be"] and not trade["locked"] and move >= risk_val * 1.5:
-                if trade["type"] == "BUY":
-                    trade["sl"] = trade["entry"] + (risk_val * 0.5)
-                else:
-                    trade["sl"] = trade["entry"] - (risk_val * 0.5)
+            # ===== BE LEVEL 2 (LOCK PROFIT) =====
+            if not trade.get("be2", False):
+                if trade["type"] == "BUY" and price >= trade["entry"] + (move * 1.5):
+                    trade["sl"] = trade["entry"] + (move * 0.5)
+                    trade["be2"] = True
+                    send_telegram(f"🟢 PROFIT LOCK {trade['symbol']}")
 
-                trade["locked"] = True
-                send_telegram(f"💰 Profit Locked {trade['symbol']}")
+                elif trade["type"] == "SELL" and price <= trade["entry"] - (move * 1.5):
+                    trade["sl"] = trade["entry"] - (move * 0.5)
+                    trade["be2"] = True
+                    send_telegram(f"🟢 PROFIT LOCK {trade['symbol']}")
 
             # ===== TP HIT =====
             if (trade["type"] == "BUY" and price >= trade["tp"]) or \
@@ -113,11 +120,16 @@ while True:
             elif (trade["type"] == "BUY" and price <= trade["sl"]) or \
                  (trade["type"] == "SELL" and price >= trade["sl"]):
 
-                pnl = -trade["risk"]
-                losses += 1
-                total_pnl += pnl
+                if trade.get("be1", False):
+                    pnl = 0
+                    breakevens += 1
+                    send_telegram(f"⚪ BE EXIT {trade['symbol']} | 0 USDT")
+                else:
+                    pnl = -trade["risk"]
+                    losses += 1
+                    send_telegram(f"❌ SL HIT {trade['symbol']} | {pnl} USDT")
 
-                send_telegram(f"❌ SL HIT {trade['symbol']} | {pnl} USDT")
+                total_pnl += pnl
                 active_trades.remove(trade)
 
         # ================= NEW TRADES =================
@@ -139,39 +151,35 @@ while True:
 
                 sl_dist = atr * 2
 
-                # ❌ MICRO SL FILTER
-                if sl_dist / price < 0.002:
+                # Micro SL filter
+                if sl_dist < price * 0.001:
                     continue
 
                 tp_dist = sl_dist * RR
 
-                # ❌ TP QUALITY FILTER
-                if tp_dist / price < 0.004:
-                    continue
+                # Spread adjustment
+                price_adj = price * (1 + SPREAD_BUFFER if signal == "BUY" else 1 - SPREAD_BUFFER)
 
-                # ===== SPREAD ADJUSTMENT =====
                 if signal == "BUY":
-                    entry = price * (1 + SPREAD + FEE)
-                    sl = entry - sl_dist
-                    tp = entry + tp_dist
+                    sl = price_adj - sl_dist
+                    tp = price_adj + tp_dist
                 else:
-                    entry = price * (1 - SPREAD - FEE)
-                    sl = entry + sl_dist
-                    tp = entry - tp_dist
+                    sl = price_adj + sl_dist
+                    tp = price_adj - tp_dist
 
-                qty = RISK_PER_TRADE / abs(entry - sl)
+                qty = RISK_PER_TRADE / abs(price_adj - sl)
 
                 trade = {
                     "symbol": symbol,
                     "type": signal,
-                    "entry": entry,
+                    "entry": price_adj,
                     "sl": sl,
+                    "sl_initial": sl,
                     "tp": tp,
                     "qty": qty,
                     "risk": RISK_PER_TRADE,
-                    "sl_initial": sl,
-                    "be": False,
-                    "locked": False
+                    "be1": False,
+                    "be2": False
                 }
 
                 active_trades.append(trade)
@@ -179,7 +187,7 @@ while True:
                 send_telegram(
                     f"🚀 ENTER {symbol}\n"
                     f"Type: {signal}\n"
-                    f"Entry: {round(entry,4)}\n"
+                    f"Entry: {round(price_adj,4)}\n"
                     f"SL: {round(sl,4)}\n"
                     f"TP: {round(tp,4)}\n"
                     f"Qty: {round(qty,4)}\n"
@@ -188,9 +196,9 @@ while True:
 
                 break
 
-        # ================= PERFORMANCE REPORT =================
+        # ================= REPORT =================
         if time.time() - last_report_time >= 3600:
-            total_trades = wins + losses
+            total_trades = wins + losses + breakevens
             winrate = (wins / total_trades * 100) if total_trades > 0 else 0
 
             send_telegram(
