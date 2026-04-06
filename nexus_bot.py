@@ -13,9 +13,11 @@ RISK_PER_TRADE = 3
 RR = 2
 MAX_TRADES = 2
 
-# Fees & Spread (adjust if needed)
-FEE_PERCENT = 0.0004   # 0.04%
-SPREAD_BUFFER = 0.0003 # 0.03%
+FEE = 0.0004          # 0.04%
+SPREAD = 0.0003       # simulated spread
+
+MIN_ATR = 0.002       # volatility filter
+TREND_THRESHOLD = 0.001  # EMA gap filter
 
 # ================= GLOBAL =================
 active_trades = []
@@ -56,12 +58,16 @@ def calculate_atr(df):
     df["ATR"] = df["TR"].rolling(14).mean()
     return df["ATR"].iloc[-1]
 
-# ================= SIGNAL =================
 def generate_signal(df):
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
 
     last = df.iloc[-1]
+
+    # Trend filter
+    ema_gap = abs(last["ema20"] - last["ema50"]) / last["close"]
+    if ema_gap < TREND_THRESHOLD:
+        return None
 
     if last["ema20"] > last["ema50"]:
         return "BUY"
@@ -70,42 +76,26 @@ def generate_signal(df):
     return None
 
 # ================= START =================
-send_telegram("🚀 v6.6 PRO SNIPER BOT STARTED")
+send_telegram("🚀 v6.7 PRO SNIPER BOT STARTED")
 
 # ================= MAIN LOOP =================
 while True:
     try:
 
-        # ================= CHECK ACTIVE =================
+        # ===== CHECK ACTIVE TRADES =====
         for trade in active_trades[:]:
             price = get_price(trade["symbol"])
-            move = abs(trade["entry"] - trade["sl_initial"])
 
-            # ===== BE LEVEL 1 (SAFE) =====
-            if not trade.get("be1", False):
-                if trade["type"] == "BUY" and price >= trade["entry"] + move:
-                    trade["sl"] = trade["entry"] * (1 + FEE_PERCENT)
-                    trade["be1"] = True
-                    send_telegram(f"🟡 BE1 Activated {trade['symbol']}")
+            move = abs(price - trade["entry"])
+            profit = move * trade["qty"]
 
-                elif trade["type"] == "SELL" and price <= trade["entry"] - move:
-                    trade["sl"] = trade["entry"] * (1 - FEE_PERCENT)
-                    trade["be1"] = True
-                    send_telegram(f"🟡 BE1 Activated {trade['symbol']}")
+            # ===== BREAKEVEN =====
+            if not trade["be_done"] and profit >= trade["risk"]:
+                trade["sl"] = trade["entry"]  # move to entry
+                trade["be_done"] = True
+                send_telegram(f"🔒 BE ACTIVATED {trade['symbol']}")
 
-            # ===== BE LEVEL 2 (LOCK PROFIT) =====
-            if not trade.get("be2", False):
-                if trade["type"] == "BUY" and price >= trade["entry"] + (move * 1.5):
-                    trade["sl"] = trade["entry"] + (move * 0.5)
-                    trade["be2"] = True
-                    send_telegram(f"🟢 PROFIT LOCK {trade['symbol']}")
-
-                elif trade["type"] == "SELL" and price <= trade["entry"] - (move * 1.5):
-                    trade["sl"] = trade["entry"] - (move * 0.5)
-                    trade["be2"] = True
-                    send_telegram(f"🟢 PROFIT LOCK {trade['symbol']}")
-
-            # ===== TP HIT =====
+            # ===== TP =====
             if (trade["type"] == "BUY" and price >= trade["tp"]) or \
                (trade["type"] == "SELL" and price <= trade["tp"]):
 
@@ -116,11 +106,11 @@ while True:
                 send_telegram(f"✅ TP HIT {trade['symbol']} | +{pnl} USDT")
                 active_trades.remove(trade)
 
-            # ===== SL HIT =====
+            # ===== SL =====
             elif (trade["type"] == "BUY" and price <= trade["sl"]) or \
                  (trade["type"] == "SELL" and price >= trade["sl"]):
 
-                if trade.get("be1", False):
+                if trade["be_done"]:
                     pnl = 0
                     breakevens += 1
                     send_telegram(f"⚪ BE EXIT {trade['symbol']} | 0 USDT")
@@ -132,7 +122,7 @@ while True:
                 total_pnl += pnl
                 active_trades.remove(trade)
 
-        # ================= NEW TRADES =================
+        # ===== NEW TRADES =====
         if len(active_trades) < MAX_TRADES:
 
             for symbol in PAIRS:
@@ -141,45 +131,45 @@ while True:
                     continue
 
                 df = get_klines(symbol)
-                signal = generate_signal(df)
+                atr = calculate_atr(df)
 
+                # Volatility filter
+                if atr / df["close"].iloc[-1] < MIN_ATR:
+                    continue
+
+                signal = generate_signal(df)
                 if not signal:
                     continue
 
-                atr = calculate_atr(df)
                 price = get_price(symbol)
 
                 sl_dist = atr * 2
-
-                # Micro SL filter
-                if sl_dist < price * 0.001:
-                    continue
-
                 tp_dist = sl_dist * RR
 
-                # Spread adjustment
-                price_adj = price * (1 + SPREAD_BUFFER if signal == "BUY" else 1 - SPREAD_BUFFER)
+                # Spread + fee adjustment
+                spread_cost = price * SPREAD
+                fee_cost = price * FEE
 
                 if signal == "BUY":
-                    sl = price_adj - sl_dist
-                    tp = price_adj + tp_dist
+                    entry = price + spread_cost
+                    sl = entry - sl_dist - fee_cost
+                    tp = entry + tp_dist
                 else:
-                    sl = price_adj + sl_dist
-                    tp = price_adj - tp_dist
+                    entry = price - spread_cost
+                    sl = entry + sl_dist + fee_cost
+                    tp = entry - tp_dist
 
-                qty = RISK_PER_TRADE / abs(price_adj - sl)
+                qty = RISK_PER_TRADE / abs(entry - sl)
 
                 trade = {
                     "symbol": symbol,
                     "type": signal,
-                    "entry": price_adj,
+                    "entry": entry,
                     "sl": sl,
-                    "sl_initial": sl,
                     "tp": tp,
                     "qty": qty,
                     "risk": RISK_PER_TRADE,
-                    "be1": False,
-                    "be2": False
+                    "be_done": False
                 }
 
                 active_trades.append(trade)
@@ -187,7 +177,7 @@ while True:
                 send_telegram(
                     f"🚀 ENTER {symbol}\n"
                     f"Type: {signal}\n"
-                    f"Entry: {round(price_adj,4)}\n"
+                    f"Entry: {round(entry,4)}\n"
                     f"SL: {round(sl,4)}\n"
                     f"TP: {round(tp,4)}\n"
                     f"Qty: {round(qty,4)}\n"
@@ -196,7 +186,7 @@ while True:
 
                 break
 
-        # ================= REPORT =================
+        # ===== REPORT =====
         if time.time() - last_report_time >= 3600:
             total_trades = wins + losses + breakevens
             winrate = (wins / total_trades * 100) if total_trades > 0 else 0
