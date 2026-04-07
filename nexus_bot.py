@@ -1,6 +1,13 @@
 import requests
 import pandas as pd
 import time
+from binance.client import Client
+
+# ================= API =================
+API_KEY = "EFZG4pDUD86WX1nyYWoodp0EOOFOmwMGYNYOe1yHdo9QKuqtyRKWrbJJlODZleSx"
+API_SECRET = "dvKR4s9nMkfxwL6kFs71jMucwYv2jKZUi2izFSikflQkMx8OizOgkzafGJOISF6q"
+
+client = Client(API_KEY, API_SECRET)
 
 # ================= SETTINGS =================
 BOT_TOKEN = "8680925321:AAF3d9OwKKBjXSQzO0_A7rxIzOQDtLIhuKo"
@@ -9,48 +16,28 @@ CHAT_ID = "2046394042"
 PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 TIMEFRAME = "5m"
 
-BASE_RISK = 3
+RISK_PER_TRADE = 1
 RR = 2
-MAX_TRADES = 2
+LEVERAGE = 5
 
-FEE = 0.0004
-SPREAD = 0.0003
-
-MIN_ATR = 0.002
-TREND_THRESHOLD = 0.001
-
-# ================= GLOBAL =================
-active_trades = []
-
-wins = 0
-losses = 0
-breakevens = 0
-total_pnl = 0
-
-risk_per_trade = BASE_RISK
-last_compound_level = 0
-
-last_report_time = time.time()
+MAX_TRADES = 3
 
 # ================= TELEGRAM =================
 def send_telegram(msg):
     print(msg)
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                  data={"chat_id": CHAT_ID, "text": msg})
 
 # ================= DATA =================
 def get_klines(symbol):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(requests.get(url).json())
     df = df.iloc[:, :6]
     df.columns = ["time", "open", "high", "low", "close", "volume"]
-    df = df.astype(float)
-    return df
+    return df.astype(float)
 
 def get_price(symbol):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    return float(requests.get(url).json()["price"])
+    return float(requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}").json()["price"])
 
 # ================= INDICATORS =================
 def calculate_atr(df):
@@ -58,172 +45,87 @@ def calculate_atr(df):
     df["H-C"] = abs(df["high"] - df["close"].shift())
     df["L-C"] = abs(df["low"] - df["close"].shift())
     df["TR"] = df[["H-L", "H-C", "L-C"]].max(axis=1)
-    df["ATR"] = df["TR"].rolling(14).mean()
-    return df["ATR"].iloc[-1]
+    return df["TR"].rolling(14).mean().iloc[-1]
 
 def generate_signal(df):
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
 
-    last = df.iloc[-1]
-    ema_gap = abs(last["ema20"] - last["ema50"]) / last["close"]
-
-    if ema_gap < TREND_THRESHOLD:
-        return None
-
-    if last["ema20"] > last["ema50"]:
+    if df["ema20"].iloc[-1] > df["ema50"].iloc[-1]:
         return "BUY"
-    elif last["ema20"] < last["ema50"]:
+    elif df["ema20"].iloc[-1] < df["ema50"].iloc[-1]:
         return "SELL"
     return None
 
-# ================= START =================
-send_telegram("🚀 v6.8 PRO SNIPER BOT STARTED")
+# ================= ORDER =================
+def place_trade(symbol, side, entry, sl, tp, qty):
+    try:
+        client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
 
-# ================= MAIN LOOP =================
+        # ENTRY
+        order = client.futures_create_order(
+            symbol=symbol,
+            side="BUY" if side == "BUY" else "SELL",
+            type="MARKET",
+            quantity=round(qty, 3)
+        )
+
+        # SL
+        client.futures_create_order(
+            symbol=symbol,
+            side="SELL" if side == "BUY" else "BUY",
+            type="STOP_MARKET",
+            stopPrice=round(sl, 4),
+            closePosition=True
+        )
+
+        # TP
+        client.futures_create_order(
+            symbol=symbol,
+            side="SELL" if side == "BUY" else "BUY",
+            type="TAKE_PROFIT_MARKET",
+            stopPrice=round(tp, 4),
+            closePosition=True
+        )
+
+        send_telegram(f"✅ LIVE TRADE {symbol}\nEntry: {entry}\nSL: {sl}\nTP: {tp}")
+
+    except Exception as e:
+        send_telegram(f"❌ Order Error: {e}")
+
+# ================= START =================
+send_telegram("🚀 v6.9 SAFE AUTO BOT STARTED")
+
+# ================= LOOP =================
 while True:
     try:
 
-        # ===== MANAGE TRADES =====
-        for trade in active_trades[:]:
-            price = get_price(trade["symbol"])
-            move = abs(price - trade["entry"])
-            profit = move * trade["qty"]
+        for symbol in PAIRS:
 
-            # ===== BE =====
-            if not trade["be_done"] and profit >= trade["risk"]:
-                trade["sl"] = trade["entry"]
-                trade["be_done"] = True
-                send_telegram(f"🔒 BE ACTIVATED {trade['symbol']}")
+            df = get_klines(symbol)
+            signal = generate_signal(df)
 
-            # ===== PARTIAL PROFIT (1.5R) =====
-            if not trade["partial_done"] and profit >= trade["risk"] * 1.5:
-                partial_pnl = trade["risk"] * 0.75  # 50% of 1.5R
-                total_pnl += partial_pnl
-                trade["qty"] *= 0.5
-                trade["partial_done"] = True
+            if not signal:
+                continue
 
-                send_telegram(f"💰 PARTIAL BOOKED {trade['symbol']} | +{round(partial_pnl,2)} USDT")
+            atr = calculate_atr(df)
+            price = get_price(symbol)
 
-            # ===== TP =====
-            if (trade["type"] == "BUY" and price >= trade["tp"]) or \
-               (trade["type"] == "SELL" and price <= trade["tp"]):
+            sl_dist = atr * 2
+            tp_dist = sl_dist * RR
 
-                pnl = trade["risk"] * RR * 0.5  # remaining 50%
-                wins += 1
-                total_pnl += pnl
+            if signal == "BUY":
+                sl = price - sl_dist
+                tp = price + tp_dist
+            else:
+                sl = price + sl_dist
+                tp = price - tp_dist
 
-                send_telegram(f"✅ TP HIT {trade['symbol']} | +{round(pnl,2)} USDT")
-                active_trades.remove(trade)
+            qty = RISK_PER_TRADE / abs(price - sl)
 
-            # ===== SL =====
-            elif (trade["type"] == "BUY" and price <= trade["sl"]) or \
-                 (trade["type"] == "SELL" and price >= trade["sl"]):
+            place_trade(symbol, signal, price, sl, tp, qty)
 
-                if trade["be_done"]:
-                    pnl = 0
-                    breakevens += 1
-                    send_telegram(f"⚪ BE EXIT {trade['symbol']}")
-                else:
-                    pnl = -trade["risk"]
-                    losses += 1
-                    send_telegram(f"❌ SL HIT {trade['symbol']} | {pnl} USDT")
-
-                total_pnl += pnl
-                active_trades.remove(trade)
-
-        # ===== COMPOUNDING =====
-        
-        if total_pnl >= (last_compound_level + 1) * 20:
-            risk_per_trade += 1
-            last_compound_level += 1
-            send_telegram(f"📈 RISK INCREASED → {risk_per_trade} USDT")
-
-        if total_pnl <= (last_compound_level - 1) * 20:
-            risk_per_trade = max(BASE_RISK, risk_per_trade - 1)
-            last_compound_level -= 1
-            send_telegram(f"📉 RISK REDUCED → {risk_per_trade} USDT")
-
-        # ===== NEW TRADES =====
-        if len(active_trades) < MAX_TRADES:
-
-            for symbol in PAIRS:
-
-                if any(t["symbol"] == symbol for t in active_trades):
-                    continue
-
-                df = get_klines(symbol)
-                atr = calculate_atr(df)
-
-                if atr / df["close"].iloc[-1] < MIN_ATR:
-                    continue
-
-                signal = generate_signal(df)
-                if not signal:
-                    continue
-
-                price = get_price(symbol)
-
-                sl_dist = atr * 2
-                tp_dist = sl_dist * RR
-
-                spread_cost = price * SPREAD
-                fee_cost = price * FEE
-
-                if signal == "BUY":
-                    entry = price + spread_cost
-                    sl = entry - sl_dist - fee_cost
-                    tp = entry + tp_dist
-                else:
-                    entry = price - spread_cost
-                    sl = entry + sl_dist + fee_cost
-                    tp = entry - tp_dist
-
-                qty = risk_per_trade / abs(entry - sl)
-
-                trade = {
-                    "symbol": symbol,
-                    "type": signal,
-                    "entry": entry,
-                    "sl": sl,
-                    "tp": tp,
-                    "qty": qty,
-                    "risk": risk_per_trade,
-                    "be_done": False,
-                    "partial_done": False
-                }
-
-                active_trades.append(trade)
-
-                send_telegram(
-                    f"🚀 ENTER {symbol}\n"
-                    f"Type: {signal}\n"
-                    f"Entry: {round(entry,4)}\n"
-                    f"SL: {round(sl,4)}\n"
-                    f"TP: {round(tp,4)}\n"
-                    f"Qty: {round(qty,4)}\n"
-                    f"Risk: {risk_per_trade} USDT"
-                )
-
-                break
-
-        # ===== REPORT =====
-        if time.time() - last_report_time >= 3600:
-            total_trades = wins + losses + breakevens
-            winrate = (wins / total_trades * 100) if total_trades > 0 else 0
-
-            send_telegram(
-                f"📊 PERFORMANCE REPORT\n\n"
-                f"Trades: {total_trades}\n"
-                f"Wins: {wins}\n"
-                f"Losses: {losses}\n"
-                f"BE: {breakevens}\n\n"
-                f"Win Rate: {round(winrate,2)}%\n"
-                f"PnL: {round(total_pnl,2)} USDT\n"
-                f"Current Risk: {risk_per_trade} USDT"
-            )
-
-            last_report_time = time.time()
+            time.sleep(5)
 
         time.sleep(10)
 
