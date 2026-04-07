@@ -133,8 +133,7 @@ while True:
                 active_trades.remove(trade)
 
         # ===== COMPOUNDING =====
-        global risk_per_trade, last_compound_level
-
+        
         if total_pnl >= (last_compound_level + 1) * 20:
             risk_per_trade += 1
             last_compound_level += 1
