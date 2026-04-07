@@ -9,15 +9,15 @@ CHAT_ID = "2046394042"
 PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 TIMEFRAME = "5m"
 
-RISK_PER_TRADE = 3
+BASE_RISK = 3
 RR = 2
 MAX_TRADES = 2
 
-FEE = 0.0004          # 0.04%
-SPREAD = 0.0003       # simulated spread
+FEE = 0.0004
+SPREAD = 0.0003
 
-MIN_ATR = 0.002       # volatility filter
-TREND_THRESHOLD = 0.001  # EMA gap filter
+MIN_ATR = 0.002
+TREND_THRESHOLD = 0.001
 
 # ================= GLOBAL =================
 active_trades = []
@@ -26,6 +26,9 @@ wins = 0
 losses = 0
 breakevens = 0
 total_pnl = 0
+
+risk_per_trade = BASE_RISK
+last_compound_level = 0
 
 last_report_time = time.time()
 
@@ -63,9 +66,8 @@ def generate_signal(df):
     df["ema50"] = df["close"].ewm(span=50).mean()
 
     last = df.iloc[-1]
-
-    # Trend filter
     ema_gap = abs(last["ema20"] - last["ema50"]) / last["close"]
+
     if ema_gap < TREND_THRESHOLD:
         return None
 
@@ -76,34 +78,42 @@ def generate_signal(df):
     return None
 
 # ================= START =================
-send_telegram("🚀 v6.7 PRO SNIPER BOT STARTED")
+send_telegram("🚀 v6.8 PRO SNIPER BOT STARTED")
 
 # ================= MAIN LOOP =================
 while True:
     try:
 
-        # ===== CHECK ACTIVE TRADES =====
+        # ===== MANAGE TRADES =====
         for trade in active_trades[:]:
             price = get_price(trade["symbol"])
-
             move = abs(price - trade["entry"])
             profit = move * trade["qty"]
 
-            # ===== BREAKEVEN =====
+            # ===== BE =====
             if not trade["be_done"] and profit >= trade["risk"]:
-                trade["sl"] = trade["entry"]  # move to entry
+                trade["sl"] = trade["entry"]
                 trade["be_done"] = True
                 send_telegram(f"🔒 BE ACTIVATED {trade['symbol']}")
+
+            # ===== PARTIAL PROFIT (1.5R) =====
+            if not trade["partial_done"] and profit >= trade["risk"] * 1.5:
+                partial_pnl = trade["risk"] * 0.75  # 50% of 1.5R
+                total_pnl += partial_pnl
+                trade["qty"] *= 0.5
+                trade["partial_done"] = True
+
+                send_telegram(f"💰 PARTIAL BOOKED {trade['symbol']} | +{round(partial_pnl,2)} USDT")
 
             # ===== TP =====
             if (trade["type"] == "BUY" and price >= trade["tp"]) or \
                (trade["type"] == "SELL" and price <= trade["tp"]):
 
-                pnl = trade["risk"] * RR
+                pnl = trade["risk"] * RR * 0.5  # remaining 50%
                 wins += 1
                 total_pnl += pnl
 
-                send_telegram(f"✅ TP HIT {trade['symbol']} | +{pnl} USDT")
+                send_telegram(f"✅ TP HIT {trade['symbol']} | +{round(pnl,2)} USDT")
                 active_trades.remove(trade)
 
             # ===== SL =====
@@ -113,7 +123,7 @@ while True:
                 if trade["be_done"]:
                     pnl = 0
                     breakevens += 1
-                    send_telegram(f"⚪ BE EXIT {trade['symbol']} | 0 USDT")
+                    send_telegram(f"⚪ BE EXIT {trade['symbol']}")
                 else:
                     pnl = -trade["risk"]
                     losses += 1
@@ -121,6 +131,19 @@ while True:
 
                 total_pnl += pnl
                 active_trades.remove(trade)
+
+        # ===== COMPOUNDING =====
+        global risk_per_trade, last_compound_level
+
+        if total_pnl >= (last_compound_level + 1) * 20:
+            risk_per_trade += 1
+            last_compound_level += 1
+            send_telegram(f"📈 RISK INCREASED → {risk_per_trade} USDT")
+
+        if total_pnl <= (last_compound_level - 1) * 20:
+            risk_per_trade = max(BASE_RISK, risk_per_trade - 1)
+            last_compound_level -= 1
+            send_telegram(f"📉 RISK REDUCED → {risk_per_trade} USDT")
 
         # ===== NEW TRADES =====
         if len(active_trades) < MAX_TRADES:
@@ -133,7 +156,6 @@ while True:
                 df = get_klines(symbol)
                 atr = calculate_atr(df)
 
-                # Volatility filter
                 if atr / df["close"].iloc[-1] < MIN_ATR:
                     continue
 
@@ -146,7 +168,6 @@ while True:
                 sl_dist = atr * 2
                 tp_dist = sl_dist * RR
 
-                # Spread + fee adjustment
                 spread_cost = price * SPREAD
                 fee_cost = price * FEE
 
@@ -159,7 +180,7 @@ while True:
                     sl = entry + sl_dist + fee_cost
                     tp = entry - tp_dist
 
-                qty = RISK_PER_TRADE / abs(entry - sl)
+                qty = risk_per_trade / abs(entry - sl)
 
                 trade = {
                     "symbol": symbol,
@@ -168,8 +189,9 @@ while True:
                     "sl": sl,
                     "tp": tp,
                     "qty": qty,
-                    "risk": RISK_PER_TRADE,
-                    "be_done": False
+                    "risk": risk_per_trade,
+                    "be_done": False,
+                    "partial_done": False
                 }
 
                 active_trades.append(trade)
@@ -181,7 +203,7 @@ while True:
                     f"SL: {round(sl,4)}\n"
                     f"TP: {round(tp,4)}\n"
                     f"Qty: {round(qty,4)}\n"
-                    f"Risk: {RISK_PER_TRADE} USDT"
+                    f"Risk: {risk_per_trade} USDT"
                 )
 
                 break
@@ -198,7 +220,8 @@ while True:
                 f"Losses: {losses}\n"
                 f"BE: {breakevens}\n\n"
                 f"Win Rate: {round(winrate,2)}%\n"
-                f"PnL: {round(total_pnl,2)} USDT"
+                f"PnL: {round(total_pnl,2)} USDT\n"
+                f"Current Risk: {risk_per_trade} USDT"
             )
 
             last_report_time = time.time()
