@@ -4,8 +4,8 @@ import time
 from binance.client import Client
 
 # ================= API =================
-API_KEY = "EFZG4pDUD86WX1nyYWoodp0EOOFOmwMGYNYOe1yHdo9QKuqtyRKWrbJJlODZleSx"
-API_SECRET = "dvKR4s9nMkfxwL6kFs71jMucwYv2jKZUi2izFSikflQkMx8OizOgkzafGJOISF6q"
+API_KEY = "jDQRXaxTTjgfRN2UgC5urDQig2ULyhwIgDrar0ehthruFnyfHj5PxE0CVkoxVuQM"
+API_SECRET = "NwjsUtDw9WFZEp03ZP67yi7ERLAyJ1plsUuzjJLLndX1DrRM4NVpusuUKC0fZHhh"
 
 client = Client(API_KEY, API_SECRET)
 
